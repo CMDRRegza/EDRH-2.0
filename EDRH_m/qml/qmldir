@@ -1,0 +1,20 @@
+module EDRH
+singleton Theme 1.0 Theme.qml
+CommanderInfoCard 1.0 CommanderInfoCard.qml
+FilterChip 1.0 FilterChip.qml
+FilterManager 1.0 FilterManager.qml
+FloatingPanel 1.0 FloatingPanel.qml
+GalaxyActionsCard 1.0 GalaxyActionsCard.qml
+GalaxyMapTab 1.0 GalaxyMapTab.qml
+GalaxyMapWindow 1.0 GalaxyMapWindow.qml
+HighPerformanceGalaxyMapTab 1.0 HighPerformanceGalaxyMapTab.qml
+ImagePicker 1.0 ImagePicker.qml
+NearestSystemsPanel 1.0 NearestSystemsPanel.qml
+NearestUnclaimedCard 1.0 NearestUnclaimedCard.qml
+QuickActionsCard 1.0 QuickActionsCard.qml
+SplashScreen 1.0 SplashScreen.qml
+StatCard 1.0 StatCard.qml
+SystemCard 1.0 SystemCard.qml
+SystemViewPopup 1.0 SystemViewPopup.qml
+AuthErrorDialog 1.0 AuthErrorDialog.qml
+ConfirmationDialog 1.0 ConfirmationDialog.qml 
