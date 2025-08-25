@@ -78,12 +78,12 @@ int main(int argc, char *argv[])
         qInstallMessageHandler(messageHandler);
         
         qDebug() << "=== EDRH APPLICATION STARTED ===";
-        qDebug() << "Application Version:" << "v1.4.0-qt";
+        qDebug() << "Application Version:" << "0.9.5";
         qDebug() << "Qt Version:" << QT_VERSION_STR;
     
     // Set application properties
     app.setApplicationName("EDRH - Elite Dangerous Records Helper");
-    app.setApplicationVersion("v1.4.0-qt");
+    app.setApplicationVersion("0.9.5");
     app.setOrganizationName("EDRH");
     
     // Set the application icon

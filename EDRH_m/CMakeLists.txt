@@ -53,6 +53,9 @@ set(HEADERS
 # Create executable
 qt6_add_executable(EDRH_m ${SOURCES} ${HEADERS})
 
+# Make it a proper Windows executable (no console window)
+set_target_properties(EDRH_m PROPERTIES WIN32_EXECUTABLE TRUE)
+
 # Add QML module (this automatically handles resources and linking)
 qt6_add_qml_module(EDRH_m
     URI EDRH
@@ -110,4 +113,50 @@ add_custom_command(TARGET EDRH_m POST_BUILD
     "${CMAKE_SOURCE_DIR}/assets"
     "$<TARGET_FILE_DIR:EDRH_m>/assets"
     COMMENT "Copying assets to build directory"
-) 
+)
+
+# Qt deployment (bundles all DLLs automatically)
+qt6_generate_deploy_qml_app_script(
+    TARGET EDRH_m
+    OUTPUT_SCRIPT deploy_script
+    MACOS_BUNDLE_POST_BUILD
+    NO_UNSUPPORTED_PLATFORM_ERROR
+    DEPLOY_USER_QML_MODULES_ON_UNSUPPORTED_PLATFORM
+)
+install(SCRIPT ${deploy_script})
+
+# Clean deployment with organized folder structure
+if(WIN32)
+    # Find windeployqt executable
+    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS ${QT_INSTALL_PATH}/bin)
+    
+    # Create organized deployment structure
+    add_custom_target(deploy
+        # Create lib directory for DLLs
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:EDRH_m>/lib"
+        # Run windeployqt with organized structure
+        COMMAND ${WINDEPLOYQT_EXECUTABLE} 
+            --qmldir ${CMAKE_SOURCE_DIR}/qml 
+            --dir "$<TARGET_FILE_DIR:EDRH_m>/lib"
+            --force
+            $<TARGET_FILE:EDRH_m>
+        # Move main Qt DLLs to lib folder
+        COMMAND ${CMAKE_COMMAND} -E copy_directory 
+            "$<TARGET_FILE_DIR:EDRH_m>/lib" 
+            "$<TARGET_FILE_DIR:EDRH_m>/lib"
+        DEPENDS EDRH_m
+        COMMENT "Creating clean deployment package with organized folder structure"
+    )
+    
+    # Alternative: Create portable package
+    add_custom_target(package
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/EDRH_Package"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:EDRH_m>" "${CMAKE_BINARY_DIR}/EDRH_Package/"
+        COMMAND ${WINDEPLOYQT_EXECUTABLE} 
+            --qmldir ${CMAKE_SOURCE_DIR}/qml 
+            --dir "${CMAKE_BINARY_DIR}/EDRH_Package/lib"
+            "${CMAKE_BINARY_DIR}/EDRH_Package/EDRH_m.exe"
+        DEPENDS EDRH_m
+        COMMENT "Creating portable package in EDRH_Package folder"
+    )
+endif() 

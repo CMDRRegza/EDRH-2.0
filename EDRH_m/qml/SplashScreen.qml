@@ -131,7 +131,7 @@ Rectangle {
             // Version
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: "v1.4.0-qt"
+                text: "0.9.5"
                 font.pixelSize: 14
                 color: "#B0B0B0"
                 opacity: 0.8

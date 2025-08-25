@@ -49,9 +49,24 @@ Rectangle {
                     Image {
                         anchors.fill: parent
                         anchors.margins: 1
-                        source: "file:///C:/Users/Admin/Documents/GitHub/Project/EDRH_m/assets/E47CDFX.png"
+                        source: "qrc:/assets/E47CDFX.png"
                         fillMode: Image.PreserveAspectCrop
                         smooth: true
+                        
+                        // Fallback sources if main source fails
+                        property var imageSources: [
+                            "qrc:/assets/E47CDFX.png",
+                            "assets/E47CDFX.png",
+                            "file:assets/E47CDFX.png"
+                        ]
+                        property int currentSourceIndex: 0
+                        
+                        onStatusChanged: {
+                            if (status === Image.Error && currentSourceIndex < imageSources.length - 1) {
+                                currentSourceIndex++
+                                source = imageSources[currentSourceIndex]
+                            }
+                        }
                         
                         // Dark overlay for better text readability
                         Rectangle {

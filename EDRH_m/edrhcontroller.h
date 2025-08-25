@@ -67,7 +67,7 @@ public:
     // Property getters
     QString commanderName() const { return m_commanderName; }
     QString currentSystem() const { return m_currentSystem; }
-    QString appVersion() const { return "v1.4.0-qt"; }
+    QString appVersion() const { return "0.9.5"; }
     bool isAdmin() const;
     QVariantList nearestSystems() const { return m_nearestSystems; }
     QVariantList unclaimedSystems() const { return m_unclaimedSystems; }

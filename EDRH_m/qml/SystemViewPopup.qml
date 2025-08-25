@@ -26,6 +26,11 @@ ApplicationWindow {
     property bool isDone: false
     property var allImages: []  // Combined user + preset images
     
+    // Upload tracking properties
+    property int uploadPendingCount: 0
+    property int uploadCompletedCount: 0  
+    property int uploadStartedCount: 0
+    
     // Signal to force UI updates when claim status changes
     signal claimStatusChanged()
     signal forceUIRefresh()  // Force immediate UI refresh
@@ -36,6 +41,36 @@ ApplicationWindow {
         interval: 600
         repeat: false
         onTriggered: claimCheckCooldown = false
+    }
+    
+    // Timer to close upload progress popup after all uploads complete
+    Timer {
+        id: uploadDelayTimer
+        interval: 1000  // Default delay, can be changed dynamically
+        repeat: false
+        onTriggered: {
+            uploadProgressPopup.close()
+            // Reset upload counters
+            uploadPendingCount = 0
+            uploadCompletedCount = 0
+            uploadStartedCount = 0
+            console.log("Upload progress dialog closed after completion")
+        }
+    }
+    
+    // Timer to handle upload timeouts (safety mechanism)
+    Timer {
+        id: uploadTimeoutTimer
+        interval: 180000  // 3 minutes total timeout for all uploads
+        repeat: false
+        onTriggered: {
+            if (uploadProgressPopup.visible && uploadPendingCount > 0) {
+                console.warn("Upload timeout reached - closing progress dialog")
+                uploadProgressText.text = "Upload timeout - some uploads may still be processing in background"
+                uploadDelayTimer.interval = 3000
+                uploadDelayTimer.restart()
+            }
+        }
     }
     
     property bool canEdit: {
@@ -61,6 +96,45 @@ ApplicationWindow {
                 }
             }
         }
+    }
+    
+    // Connection to imageLoader for preset image updates (like SystemCard)
+    property int imageRefreshTrigger: 0
+    
+    Connections {
+        target: typeof imageLoader !== 'undefined' ? imageLoader : null
+        function onPresetImagesFromDatabaseLoaded(presetImages) {
+            console.log("SystemViewPopup: Preset images loaded, refreshing display")
+            // Trigger image refresh when new preset images are loaded
+            imageRefreshTrigger++
+            // Refresh image display
+            updateSystemDisplay()
+            getAllImages()
+        }
+        
+        function onPresetImageLoaded(category, imagePath) {
+            // Get the actual category from systemData
+            var actualCategory = ""
+            if (systemData && systemData.categoryList && systemData.categoryList.length > 0) {
+                actualCategory = systemData.categoryList[0]
+            } else if (systemData && systemData.category) {
+                actualCategory = systemData.category
+            }
+            
+            // Trigger image refresh if it's for our current category
+            if (category === actualCategory) {
+                console.log("SystemViewPopup: Preset image loaded for our category:", category)
+                imageRefreshTrigger++
+                // Refresh image display
+                updateSystemDisplay()
+                getAllImages()
+            }
+        }
+    }
+    
+    Connections {
+        target: (edrhController && edrhController.supabaseClient) ? edrhController.supabaseClient : null
+        enabled: target !== null
         
         function onTakenSystemsReceived(takenSystems) {
             if (!popupWindow.visible || !systemName) return
@@ -231,7 +305,13 @@ ApplicationWindow {
             
             return uniqueCategories.join(", ")
         }
-        return category || "Unknown Category"
+        
+        // Fallback to systemData.category if categoryList is not available
+        if (systemData && systemData.category && systemData.category.trim() !== "") {
+            return systemData.category
+        }
+        
+        return "Unknown Category"
     }
     
     function getAllImages() {
@@ -239,10 +319,13 @@ ApplicationWindow {
         
         // First add user uploaded images
         for (var i = 0; i < uploadedImages.length; i++) {
-            var imageUrl = uploadedImages[i]
-            if (imageUrl.startsWith("http")) {
+            var imageObj = uploadedImages[i]
+            // Handle both old string format and new object format
+            var imageUrl = (typeof imageObj === 'string') ? imageObj : (imageObj && imageObj.url ? imageObj.url : "")
+            
+            if (imageUrl && imageUrl.toString().indexOf("http") === 0) {
                 images.push({
-                    category: "User Upload " + (i + 1),
+                    category: imageObj.title || ("User Upload " + (i + 1)),
                     imageUrl: imageUrl,
                     isUserImage: true
                 })
@@ -285,11 +368,21 @@ ApplicationWindow {
     }
     
     function getPresetImageForCategory(cat) {
-        // Use DB-driven preset image URL via SupabaseClient cache
-        if (edrhController && edrhController.supabaseClient) {
-            var url = edrhController.supabaseClient.getSystemImageUrl(systemName, cat)
-            return url || ""
+        // Use the same imageLoader system as the main app (this actually works!)
+        if (typeof imageLoader !== 'undefined' && imageLoader && cat) {
+            console.log("SystemViewPopup: Checking imageLoader for category:", cat)
+            
+            if (imageLoader.hasPresetImage(cat)) {
+                var presetUrl = imageLoader.getPresetImageUrl(cat)
+                console.log("SystemViewPopup: Found preset image URL:", presetUrl)
+                return presetUrl || ""
+            } else {
+                console.log("SystemViewPopup: No preset image found for category:", cat)
+                return ""
+            }
         }
+        
+        console.log("SystemViewPopup: imageLoader not available")
         return ""
     }
     
@@ -347,10 +440,19 @@ ApplicationWindow {
             // edited => skip default
         }
         
-        if (needsDefaultData && category) {
+        // Get category from systemData instead of relying on empty category property
+        var actualCategory = ""
+        if (systemData && systemData.categoryList && systemData.categoryList.length > 0) {
+            actualCategory = systemData.categoryList[0]
+        } else if (systemData && systemData.category) {
+            actualCategory = systemData.category
+        }
+        
+        if (needsDefaultData && actualCategory) {
             // load default by category
+            console.log("Loading default system info for category:", actualCategory)
             try {
-                edrhController.supabaseClient.getSystemInformation(systemName, category)
+                edrhController.supabaseClient.getSystemInformation(systemName, actualCategory)
             } catch (error) {
                 console.error("Error loading default system info:", error)
             }
@@ -609,7 +711,7 @@ ApplicationWindow {
     x: (Screen.width - width) / 2
     y: (Screen.height - height) / 2
     
-    title: "POI: " + systemName
+    title: systemName
     modality: Qt.ApplicationModal
     flags: Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowTitleHint
     
@@ -638,23 +740,18 @@ ApplicationWindow {
             }
         })
         
-        // Suppress main app notifications
-        edrhController.suppressMainAppNotifications = true
+        // DISABLED: Don't suppress notifications - this was causing UI issues
+        // edrhController.suppressMainAppNotifications = true
     }
     
     Component.onDestruction: {
-        // Use a timer to delay re-enabling notifications to avoid race condition
-        suppressionTimer.start()
+        // DISABLED: Don't mess with notification suppression on destruction
+        // This was causing UI instability after operations
+        console.log("SystemViewPopup destroyed for:", systemName)
+        // suppressionTimer.start()
     }
     
-    // Timer to close upload progress popup
-    Timer {
-        id: uploadDelayTimer
-        interval: 3000  // 3 seconds
-        onTriggered: {
-            uploadProgressPopup.close()
-        }
-    }
+
     
     // Timer to delay re-enabling main app notifications
     Timer {
@@ -753,32 +850,42 @@ ApplicationWindow {
         
         onAccepted: {
             // multiple images selected
-            uploadProgressText.text = "Uploading " + files.length + " images to imgbb..."
+            uploadProgressText.text = "Preparing to upload " + files.length + " images..."
             uploadProgressPopup.open()
             
+            // Reset upload tracking
+            uploadPendingCount = files.length
+            uploadCompletedCount = 0
+            uploadStartedCount = 0
+            
+            // Start the timeout timer as a safety mechanism
+            uploadTimeoutTimer.restart()
+            
             // Upload each file using the SupabaseClient method
-            var uploadedCount = 0
             for (var i = 0; i < files.length; i++) {
                 var fileUrl = files[i].toString()
-                // uploading image
                 
                 // Convert file URL to local path (remove file:/// prefix)
                 var localPath = fileUrl.replace("file:///", "")
                 
                 // Use the SupabaseClient upload method directly
                 if (edrhController) {
+                    uploadStartedCount++
+                    uploadProgressText.text = "Starting upload " + uploadStartedCount + " of " + files.length + "..."
                     edrhController.uploadImageToImgbb(localPath, systemName)
-                    uploadedCount++
-                    uploadProgressText.text = "Uploading image " + uploadedCount + " of " + files.length + "..."
                 } else {
                     console.error("No edrhController available for upload")
                     uploadProgressText.text = "Upload failed - no controller available"
+                    uploadDelayTimer.interval = 2000
+                    uploadDelayTimer.restart()
+                    break
                 }
             }
             
-            // For now, close the progress popup after a delay using Qt Timer
-            // TODO: Connect to actual upload completion signals
-            uploadDelayTimer.start()
+            // Update status after starting all uploads
+            if (uploadStartedCount > 0) {
+                uploadProgressText.text = "Uploading " + uploadStartedCount + " image(s)... (This may take 1-2 minutes for large images)"
+            }
         }
     }
     
@@ -1096,49 +1203,78 @@ ApplicationWindow {
         }
         
         function onSystemImageSet(sysName, imageUrl, success) {
-            console.log("=== onSystemImageSet CALLED ===")
-            console.log("sysName:", sysName, "systemName:", systemName)
-            console.log("imageUrl:", imageUrl)
-            console.log("success:", success)
-            console.log("Condition check:", sysName === systemName && success && imageUrl)
-            
-            if (sysName === systemName && success && imageUrl) {
-                console.log("Image uploaded and saved for", sysName, ":", imageUrl)
+            if (sysName === systemName) {
+                console.log("SystemViewPopup: onSystemImageSet called - sysName:", sysName, "success:", success, "imageUrl:", imageUrl ? "present" : "empty")
+                console.log("Upload tracking state - pending:", uploadPendingCount, "completed:", uploadCompletedCount)
                 
-                // If no images exist, this becomes the primary image
-                if (uploadedImages.length === 0) {
-                    uploadedImages.push({
-                        url: imageUrl,
-                        title: "",
-                        isPrimary: true
-                    })
-                } else {
-                    // Otherwise add as additional image
-                    uploadedImages.push({
-                        url: imageUrl,
-                        title: "",
-                        isPrimary: false
-                    })
+                // SIMPLIFIED: Just close progress dialog if it's open and upload was successful
+                if (success && imageUrl && uploadProgressPopup.visible) {
+                    uploadProgressText.text = "✅ Upload successful! Refreshing display..."
+                    uploadDelayTimer.interval = 1500
+                    uploadDelayTimer.restart()
+                    
+                    // Stop timeout timer
+                    if (uploadTimeoutTimer.running) {
+                        uploadTimeoutTimer.stop()
+                    }
                 }
                 
-                // Update both image displays
-                imagesRepeater.model = uploadedImages.length
-                imageManagerRepeater.model = uploadedImages.length > 0 ? uploadedImages : []
-                
-                // Force property update to trigger bindings
-                uploadedImagesChanged()
-                console.log("After adding new image, uploadedImages.length:", uploadedImages.length)
-                console.log("uploadedImages contents:", JSON.stringify(uploadedImages))
-                
-                // Force repeater updates
-                if (imageTitlesRepeater) {
-                    imageTitlesRepeater.model = uploadedImages.length
+                // Handle successful uploads
+                if (success && imageUrl) {
+                    console.log("SystemViewPopup: Processing successful upload for", sysName, ":", imageUrl)
+                    
+                    try {
+                        // Add the uploaded image to our array
+                        var newImage = {
+                            url: imageUrl,
+                            title: "",
+                            isPrimary: uploadedImages.length === 0  // First image is primary
+                        }
+                        
+                        uploadedImages.push(newImage)
+                        console.log("Image added to array, new length:", uploadedImages.length)
+                        
+                        // CRITICAL: Update repeater models immediately to show new image
+                        try {
+                            if (typeof imagesRepeater !== 'undefined') {
+                                imagesRepeater.model = uploadedImages.length
+                            }
+                            if (typeof imageManagerRepeater !== 'undefined') {
+                                imageManagerRepeater.model = uploadedImages.length > 0 ? uploadedImages : []
+                            }
+                            if (typeof imageTitlesRepeater !== 'undefined') {
+                                imageTitlesRepeater.model = uploadedImages.length
+                            }
+                            console.log("Repeater models updated - should show", uploadedImages.length, "images")
+                        } catch (e) {
+                            console.warn("Error updating repeater models:", e)
+                        }
+                        
+                        // Force UI updates with error handling
+                        uploadedImagesChanged()
+                        
+                        // Update display with try-catch for safety
+                        try {
+                            updateSystemDisplay()
+                        } catch (e) {
+                            console.warn("Error in updateSystemDisplay:", e)
+                        }
+                        
+                        try {
+                            getAllImages()
+                        } catch (e) {
+                            console.warn("Error in getAllImages:", e)
+                        }
+                        
+                        console.log("Upload processing completed successfully")
+                    } catch (e) {
+                        console.error("Error processing successful upload:", e)
+                    }
                 }
-                
-                // Close the upload progress popup
-                uploadProgressPopup.close()
             }
         }
+        
+
         
         // Listen for general system updates (like when taken systems are refreshed)
         function onSystemUpdated() {
@@ -1510,7 +1646,7 @@ ApplicationWindow {
                         }
                         
                         Text {
-                            text: category || "Unknown Category"
+                            text: getCategoriesText()
                             font.pixelSize: 14
                             color: "#B0B0B0"
                             Layout.fillWidth: true
@@ -2220,7 +2356,7 @@ ApplicationWindow {
                                             spacing: 10
                                             
                                             Text {
-                                                text: category || "Space System"
+                                                text: getCategoriesText()
                                                 font.pixelSize: 14
                                                 font.bold: true
                                                 color: "#888888"
@@ -2232,7 +2368,14 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             Layout.preferredHeight: 320  // FIXED HEIGHT - THIS IS KEY!
                                             source: {
-                                                var url = getPresetImageForCategory(category)
+                                                // Get the first category from systemData
+                                                var cat = ""
+                                                if (systemData && systemData.categoryList && systemData.categoryList.length > 0) {
+                                                    cat = systemData.categoryList[0]
+                                                } else if (systemData && systemData.category) {
+                                                    cat = systemData.category
+                                                }
+                                                var url = getPresetImageForCategory(cat)
                                                 if (url && url.length > 0) return url
                                                 return "" // let outer logic/caching handle no-image case
                                             }
@@ -3051,7 +3194,16 @@ ApplicationWindow {
                                                 Image {
                                                     anchors.fill: parent
                                                     anchors.margins: 4
-                                                    source: getPresetImageForCategory(category)
+                                                    source: {
+                                                        // Get the first category from systemData
+                                                        var cat = ""
+                                                        if (systemData && systemData.categoryList && systemData.categoryList.length > 0) {
+                                                            cat = systemData.categoryList[0]
+                                                        } else if (systemData && systemData.category) {
+                                                            cat = systemData.category
+                                                        }
+                                                        return getPresetImageForCategory(cat)
+                                                    }
                                                     fillMode: Image.PreserveAspectCrop
                                                     asynchronous: true
                                                 }

@@ -32,7 +32,7 @@ ApplicationWindow {
     x: (Screen.width - width) / 2
     y: (Screen.height - height) / 2
     
-    title: "POI: " + systemName
+    title: systemName
     modality: Qt.ApplicationModal
     flags: Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowTitleHint
     
@@ -428,8 +428,13 @@ ApplicationWindow {
             }
             return uniqueCategories.join(", ")
         }
-        // Fallback to single category
-        return category || "Unknown Category"
+        
+        // Fallback to systemData.category if categoryList is not available
+        if (systemData && systemData.category && systemData.category.trim() !== "") {
+            return systemData.category
+        }
+        
+        return "Unknown Category"
     }
     
     function getCategoryColor() {
@@ -617,7 +622,7 @@ ApplicationWindow {
                             }
                             
                             Text {
-                                text: category || "Unknown Category"
+                                text: getCategoriesText()
                                 font.pixelSize: 14
                                 color: "#B0B0B0"
                                 Layout.fillWidth: true

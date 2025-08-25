@@ -492,6 +492,13 @@ ApplicationWindow {
         }
         
         function onShowError(title, message) {
+            // Suppress "Database Error" dialogs - they often occur during normal operation
+            // and shouldn't block the user interface (especially during image uploads)
+            if (title === "Database Error") {
+                console.warn("Suppressed Database Error dialog:", message)
+                return
+            }
+            
             messagePopup.title = title
             messagePopup.message = message
             messagePopup.open()
@@ -867,10 +874,10 @@ ApplicationWindow {
         
         console.log("✅ [" + timestamp + "] CREATING SystemViewPopup for:", systemName)
             
-            // Create and show SystemViewPopup
+            // Create and show SystemViewPopup with proper parenting to prevent garbage collection
             var component = Qt.createComponent("qrc:/EDRH/qml/SystemViewPopup.qml")
             if (component.status === Component.Ready) {
-                var popup = component.createObject(null, {
+                var popup = component.createObject(mainWindow, {  // ← FIX: Parent to mainWindow for stability
                     "systemName": systemName,
                     "systemData": systemData || {}
                 })
@@ -878,8 +885,13 @@ ApplicationWindow {
                 if (popup) {
                     console.log("QML: SystemViewPopup created successfully for:", systemName)
                     
-                    // Don't connect to any signals - let the timer handle debounce cleanup
-                    // This avoids race conditions and multiple signal firings
+                    // Connect to close signal to reset debounce when user manually closes
+                    popup.closing.connect(function() {
+                        console.log("SystemViewPopup manually closed by user")
+                        systemPopupInProgress = false
+                        lastSystemPopupRequest = ""
+                        // Don't restart the timer - user action should clear immediately
+                    })
                     
                     popup.show()
                     popup.requestActivate()
