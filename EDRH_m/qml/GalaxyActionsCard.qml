@@ -101,6 +101,8 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 360  // Increased from 300 to 360 for better statistics layout
+            Layout.maximumHeight: 360    // Add maximum height constraint to prevent stretching
+            Layout.minimumHeight: 280    // Add minimum height to prevent collapsing too much
             color: Theme.secondaryBgColor
             radius: 15
             border.width: 1
@@ -137,6 +139,8 @@ Rectangle {
                     StatCard {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 75  // Increased from 50 to 75 for better text layout
+                        Layout.maximumHeight: 75    // Prevent stretching
+                        Layout.minimumHeight: 60    // Prevent collapsing
                         title: "APP UPTIME"
                         value: edrhController.sessionTime
                         icon: ""
@@ -147,6 +151,8 @@ Rectangle {
                     StatCard {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 75  // Increased from 50 to 75
+                        Layout.maximumHeight: 75    // Prevent stretching
+                        Layout.minimumHeight: 60    // Prevent collapsing
                         title: "JUMPS THIS SESSION"
                         value: edrhController.jumpCount.toString()
                         icon: ""
@@ -157,6 +163,8 @@ Rectangle {
                     StatCard {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 75  // Increased from 50 to 75
+                        Layout.maximumHeight: 75    // Prevent stretching
+                        Layout.minimumHeight: 60    // Prevent collapsing
                         title: "MAP STATUS"
                         value: edrhController.mapWindowActive ? "Active" : "Inactive"
                         icon: ""
@@ -167,6 +175,8 @@ Rectangle {
                     StatCard {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 75  // Increased from 50 to 75
+                        Layout.maximumHeight: 75    // Prevent stretching
+                        Layout.minimumHeight: 60    // Prevent collapsing
                         title: "YOUR CLAIMS"
                         value: edrhController.claimManager ? edrhController.claimManager.getClaimCount().toString() : "0"
                         icon: ""

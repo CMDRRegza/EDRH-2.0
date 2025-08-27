@@ -303,7 +303,7 @@ ApplicationWindow {
                                 // Nearest Unclaimed Card  
                                 NearestUnclaimedCard {
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 220  // Increased from 200 to 220
+                                    Layout.preferredHeight: 240  // Increased from 220 to 240 for better text layout
                                 }
                                 
                                 // Nearest Systems Panel
@@ -575,7 +575,23 @@ ApplicationWindow {
 
     // Application initialization with commander detection FIRST
     function initializeApplication() {
-        // Step 1: Detect commanders BEFORE loading config (to prevent normal startup)
+        // Step 1: Check if journal is already verified - if so, skip commander detection
+        if (configManager.loadConfig()) {
+            if (configManager.journalVerified && configManager.commanderName !== "" && configManager.commanderName !== "Unknown") {
+                console.log("QML: Journal already verified for commander:", configManager.commanderName)
+                splashScreen.updateProgress(0.5, "Loading verified configuration...")
+                
+                // Skip commander detection - proceed directly to normal initialization
+                authenticationComplete(true, "Journal already verified")
+                return
+            } else {
+                console.log("QML: Journal not verified (verified:", configManager.journalVerified, "commander:", configManager.commanderName, ")")
+            }
+        } else {
+            console.log("QML: Failed to load config, proceeding with commander detection")
+        }
+        
+        // Step 2: If not verified, detect commanders BEFORE loading config (to prevent normal startup)  
         splashScreen.updateProgress(0.1, "Scanning journal files...")
         
         // Try to get journal path
@@ -687,12 +703,21 @@ ApplicationWindow {
                 }
                 splashScreen.updateProgress(0.3, "Loading configuration...")
                 
-                // NOW load config which will trigger normal C++ startup
-                configManager.loadConfig()
-                
-                // User confirmed commander detection, so enable journal access for this session
+                // User confirmed commander detection - set journal as verified
+                // This will trigger the delayed C++ initialization via journalVerifiedChanged signal
                 console.log("QML: User confirmed commander detection, setting journal as verified")
-                configManager.setJournalVerified(true)
+                console.log("QML: configManager available:", !!configManager)
+                console.log("QML: setJournalVerified function available:", typeof configManager.setJournalVerified)
+                
+                if (configManager && typeof configManager.setJournalVerified === 'function') {
+                    // This will trigger journalVerifiedChanged signal → delayed C++ initialization
+                    configManager.setJournalVerified(true)
+                    console.log("QML: setJournalVerified(true) called - this should trigger C++ initialization")
+                } else {
+                    console.error("QML: Cannot call setJournalVerified - configManager or function not available")
+                }
+                
+                // No need to call loadConfig() again - initialization will happen via journalVerifiedChanged signal
                 
                 // Skip authentication for now and proceed directly
                 Qt.callLater(function() {

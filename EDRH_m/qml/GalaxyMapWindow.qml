@@ -5,7 +5,7 @@ import QtQuick.Window 2.15
 Window {
     id: galaxyMapWindow
     
-    title: "EDRH - Galaxy Map - TESTING VERSION"
+    title: "Galaxy Map"
     width: 1200
     height: 800
     minimumWidth: 800

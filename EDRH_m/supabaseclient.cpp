@@ -205,38 +205,118 @@ QString SupabaseClient::formatCategoryTableData(const QJsonObject &categoryData,
         QString key = it.key();
         QJsonValue value = it.value();
         
-        // Skip system name, id, and coordinate columns as they're not interesting for display
-        if (key.toLower() == "id" || key.toLower() == "system" || 
-            key.toLower() == "x" || key.toLower() == "y" || key.toLower() == "z") {
+        // Only skip 'id' column as requested by user
+        if (key.toLower() == "id") {
             continue;
         }
         
-        // Skip null or empty values
-        if (value.isNull() || value.toString().isEmpty()) {
+        // Handle null or empty values by showing them as "Not Available"
+        if (value.isNull() || (value.isString() && value.toString().isEmpty())) {
+            // Still show the field but indicate no data - use same formatting as below
+            QString formattedKey = key;
+            formattedKey = formattedKey.replace("_", " ");
+            
+            // Handle specific capitalization patterns
+            formattedKey = formattedKey.replace(" km", " (km)").replace(" KM", " (km)")
+                          .replace(" LS", " (LS)").replace(" AU", " (AU)")
+                          .replace(" days", " (days)")
+                          .replace("Bio Signals", "Bio Signals")
+                          .replace("Outer Ring", "Outer Ring")
+                          .replace("Planet Type", "Planet Type")
+                          .replace("Moon Type", "Moon Type")
+                          .replace("Axial Tilt", "Axial Tilt")
+                          .replace("Orbital Period", "Orbital Period");
+                          
+            // Capitalize first letter of each word
+            QStringList words = formattedKey.split(' ');
+            for (int i = 0; i < words.size(); ++i) {
+                if (!words[i].isEmpty()) {
+                    words[i][0] = words[i][0].toUpper();
+                }
+            }
+            formattedKey = words.join(' ');
+            
+            formattedInfo << QString("%1: Not Available").arg(formattedKey);
             continue;
         }
         
         // Format the key name to be more readable
         QString formattedKey = key;
-        formattedKey = formattedKey.replace("_", " ").replace("1", " 1").replace("2", " 2");
+        formattedKey = formattedKey.replace("_", " ");
+        
+        // Handle specific capitalization patterns
+        formattedKey = formattedKey.replace(" km", " (km)").replace(" KM", " (km)")
+                      .replace(" LS", " (LS)").replace(" AU", " (AU)")
+                      .replace(" days", " (days)")
+                      .replace("Bio Signals", "Bio Signals")
+                      .replace("Outer Ring", "Outer Ring")
+                      .replace("Planet Type", "Planet Type")
+                      .replace("Moon Type", "Moon Type")
+                      .replace("Axial Tilt", "Axial Tilt")
+                      .replace("Orbital Period", "Orbital Period");
+                      
+        // Capitalize first letter of each word
+        QStringList words = formattedKey.split(' ');
+        for (int i = 0; i < words.size(); ++i) {
+            if (!words[i].isEmpty()) {
+                words[i][0] = words[i][0].toUpper();
+            }
+        }
+        formattedKey = words.join(' ');
         
         // Handle different value types
         QString formattedValue;
         if (value.isDouble()) {
             double numValue = value.toDouble();
-            // Format numbers appropriately
+            // Format numbers appropriately based on field names
             if (key.contains("Distance", Qt::CaseInsensitive) && key.contains("LS", Qt::CaseInsensitive)) {
                 formattedValue = QString("%1 LS").arg(numValue, 0, 'f', 2);
             } else if (key.contains("Distance", Qt::CaseInsensitive) && key.contains("AU", Qt::CaseInsensitive)) {
                 formattedValue = QString("%1 AU").arg(numValue, 0, 'f', 6);
-            } else if (key.contains("Radius", Qt::CaseInsensitive) && key.contains("KM", Qt::CaseInsensitive)) {
+            } else if (key.contains("Distance", Qt::CaseInsensitive) && key.contains("km", Qt::CaseInsensitive)) {
+                formattedValue = QString("%1 km").arg(numValue, 0, 'f', 2);
+            } else if (key.contains("Radius", Qt::CaseInsensitive) && key.contains("km", Qt::CaseInsensitive)) {
                 formattedValue = QString("%1 km").arg(numValue, 0, 'f', 0);
-            } else if (key.contains("Inclination", Qt::CaseInsensitive)) {
+            } else if (key.contains("Inclination", Qt::CaseInsensitive) || key.contains("Axial_Tilt", Qt::CaseInsensitive)) {
                 formattedValue = QString("%1°").arg(numValue, 0, 'f', 1);
-            } else if (key.contains("Period", Qt::CaseInsensitive)) {
+            } else if (key.contains("Period", Qt::CaseInsensitive) && key.contains("days", Qt::CaseInsensitive)) {
                 formattedValue = QString("%1 days").arg(numValue, 0, 'f', 2);
+            } else if (key.contains("Eccentricity", Qt::CaseInsensitive)) {
+                formattedValue = QString::number(numValue, 'f', 6);
+            } else if (key.toLower() == "x" || key.toLower() == "y" || key.toLower() == "z") {
+                // Format coordinates with proper precision
+                formattedValue = QString::number(numValue, 'f', 2);
+            } else if (key.contains("Ring", Qt::CaseInsensitive) && key.contains("km", Qt::CaseInsensitive)) {
+                formattedValue = QString("%1 km").arg(numValue, 0, 'f', 0);
+            } else if (key.contains("Outer", Qt::CaseInsensitive) && key.contains("Radius", Qt::CaseInsensitive)) {
+                // Format OuterRadius in km with commas for readability
+                if (numValue > 1000000) {
+                    formattedValue = QString("%1 km").arg(numValue / 1000000.0, 0, 'f', 2) + "M"; // Convert to millions
+                } else if (numValue > 1000) {
+                    formattedValue = QString("%1 km").arg(numValue / 1000.0, 0, 'f', 1) + "K"; // Convert to thousands  
+                } else {
+                    formattedValue = QString("%1 km").arg(numValue, 0, 'f', 0);
+                }
+            } else if (key.contains("SMA", Qt::CaseInsensitive) || key.contains("SemiMajor", Qt::CaseInsensitive)) {
+                // Format SemiMajorAxis in AU with proper precision
+                formattedValue = QString("%1 AU").arg(numValue, 0, 'f', 6);
+            } else if (key.contains("Inclination", Qt::CaseInsensitive)) {
+                // Format Inclination in degrees
+                formattedValue = QString("%1°").arg(numValue, 0, 'f', 2);
             } else {
-                formattedValue = QString::number(numValue, 'f', 3);
+                // General numeric formatting - NO MORE SCIENTIFIC NOTATION
+                if (numValue > 1000000) {
+                    // Format large numbers with readable units instead of scientific notation
+                    if (numValue > 1000000000) {
+                        formattedValue = QString("%1B").arg(numValue / 1000000000.0, 0, 'f', 1); // Billions
+                    } else {
+                        formattedValue = QString("%1M").arg(numValue / 1000000.0, 0, 'f', 1); // Millions
+                    }
+                } else if (numValue > 1000) {
+                    formattedValue = QString("%1K").arg(numValue / 1000.0, 0, 'f', 1); // Thousands
+                } else {
+                    formattedValue = QString::number(numValue, 'f', 3);
+                }
             }
         } else if (value.isString()) {
             formattedValue = value.toString();
@@ -3650,7 +3730,7 @@ void SupabaseClient::logLoginEvent(const QString &commanderName, bool isAdmin, c
     loginData["commander"] = commanderName;
     loginData["is_admin"] = isAdmin;
     loginData["login_time"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    loginData["app_version"] = "v1.4.0-qt";
+    loginData["app_version"] = "0.9.5";
     loginData["event_type"] = eventType;
     if (!details.isEmpty()) {
         loginData["details"] = details;

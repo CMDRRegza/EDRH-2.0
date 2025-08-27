@@ -15,8 +15,8 @@ find_package(Qt6 REQUIRED COMPONENTS
     Network
 )
 
-# Set Qt6 to be found automatically
-set(CMAKE_PREFIX_PATH "C:/Qt/6.9.1/mingw_64")
+# Set Qt6 to be found automatically - use environment variable or find_package will locate it
+# set(CMAKE_PREFIX_PATH "C:/Qt/6.9.1/mingw_64")  # Removed hardcoded Qt path
 
 # Enable Qt6 MOC, UIC, and RCC
 set(CMAKE_AUTOMOC ON)

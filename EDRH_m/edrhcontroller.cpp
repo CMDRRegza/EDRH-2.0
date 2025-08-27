@@ -263,22 +263,7 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
                 this, [this](const QString &commander) {
                     qDebug() << "Journal monitor commander detected signal received:" << commander;
                     
-                    // Check if journal is verified before allowing access
-                    qDebug() << "Commander detection verification check - configManager:" << (m_configManager ? "available" : "null");
-                    if (m_configManager) {
-                        qDebug() << "Journal verified status for commander detection:" << m_configManager->journalVerified();
-                    }
-                    
-                    if (m_configManager && !m_configManager->journalVerified()) {
-                        qWarning() << "Commander detected but journal not verified:" << commander;
-                        emit showError("Access Denied", 
-                                     QString("Commander '%1' detected but journal verification is required.\n\n"
-                                            "Please contact administrator for journal verification.")
-                                     .arg(commander));
-                        return;
-                    }
-                    
-                    qDebug() << "Journal verified, allowing commander access:" << commander;
+                    qDebug() << "Commander detected from journal monitor:" << commander;
                     setCommanderName(commander);
                     
                     // Trigger webhook for program login
@@ -531,6 +516,7 @@ void EDRHController::refreshData()
         // Load real data from Supabase - use updateNearestSystems to maintain distance sorting
         updateNearestSystems(); // This intelligently chooses between getSystems and getSystemsNear
         m_supabaseClient->getTakenSystems();
+        qDebug() << "Requesting POI systems data for commander:" << m_commanderName;
         m_supabaseClient->getPOISystems(m_commanderName); // Load POI systems with commander context
         m_supabaseClient->getCategories(); // Load categories dynamically
         
@@ -1940,7 +1926,20 @@ void EDRHController::handlePOIDataForMerge(const QJsonArray &poiData)
 
     if (systemsUpdated) {
         qDebug() << "POI data merged, emitting nearestSystemsChanged signal";
+        
+        // CRITICAL FIX: Also update galaxy map systems with the same POI data
+        // since filtering uses galaxyMapSystems, not nearestSystems
+        m_galaxyMapSystems = m_nearestSystems;
+        m_visibleSystemsCount = m_nearestSystems.size();
+        
         emit nearestSystemsChanged();
+        emit galaxyMapSystemsChanged();
+        emit visibleSystemsCountChanged();
+        
+        // Also update unclaimed systems since POI data affects them too
+        updateUnclaimedSystems();
+        
+        qDebug() << "Galaxy map systems also updated with POI data. Systems count:" << m_galaxyMapSystems.size();
     } else {
         qDebug() << "No systems were updated with POI data";
     }

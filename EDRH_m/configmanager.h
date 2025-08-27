@@ -42,7 +42,7 @@ public:
     
     // Property setters
     void setCommanderName(const QString &name);
-    void setJournalPath(const QString &path);
+    Q_INVOKABLE void setJournalPath(const QString &path);
     void setCurrentSystem(const QString &system);
     Q_INVOKABLE void setJournalVerified(bool verified);
 
@@ -77,6 +77,7 @@ private:
     // Helper methods
     void initializeDefaults();
     QString getConfigPath() const;
+    QString getDefaultJournalPath() const;
 };
 
 #endif // CONFIGMANAGER_H 

@@ -31,6 +31,17 @@ ApplicationWindow {
     property int uploadCompletedCount: 0  
     property int uploadStartedCount: 0
     
+    // Multiple category support
+    property var multiCategoryResults: ({})
+    property int pendingCategoryQueries: 0
+    property bool multiCategoryCombined: false
+    
+    // Global debounce for updateSystemDisplay to prevent duplicates
+    property bool updateSystemDisplayInProgress: false
+    
+    // Prevent infinite loop when trying to load category table data
+    property bool categoryDataLoadingInProgress: false
+    
     // Signal to force UI updates when claim status changes
     signal claimStatusChanged()
     signal forceUIRefresh()  // Force immediate UI refresh
@@ -69,6 +80,19 @@ ApplicationWindow {
                 uploadProgressText.text = "Upload timeout - some uploads may still be processing in background"
                 uploadDelayTimer.interval = 3000
                 uploadDelayTimer.restart()
+            }
+        }
+    }
+    
+    // Safety timer to prevent infinite loops when loading category data
+    Timer {
+        id: categoryLoadTimeoutTimer
+        interval: 10000  // 10 second timeout
+        repeat: false
+        onTriggered: {
+            if (categoryDataLoadingInProgress) {
+                console.warn("checkIfNeedDefaultData: Timeout reached - clearing infinite loop protection")
+                categoryDataLoadingInProgress = false
             }
         }
     }
@@ -186,6 +210,72 @@ ApplicationWindow {
             systemData.edited = false
             systemData.claimed = false
             systemData.claimedBy = ""
+        }
+    }
+    
+    // Connection to handle multiple category information
+    Connections {
+        target: edrhController
+        enabled: target !== null
+        
+        function onSystemInformationReceived(sysName, sysInfo) {
+            if (sysName !== systemName) return
+            
+            console.log("SystemViewPopup: Received system information for", sysName)
+            
+            // Check if we're in multi-category mode (either pending queries or already have results)
+            var isMultiCategoryMode = (pendingCategoryQueries > 0) || (Object.keys(multiCategoryResults).length > 0)
+            
+            if (isMultiCategoryMode) {
+                // Store this result by category
+                var categoryName = sysInfo.category || "Unknown"
+                multiCategoryResults[categoryName] = sysInfo
+                
+                // Only decrement if we were actually waiting for this query
+                if (pendingCategoryQueries > 0) {
+                    pendingCategoryQueries--
+                }
+                
+                console.log("Stored category result for:", categoryName, "Remaining queries:", pendingCategoryQueries)
+                
+                // Check if we have all the categories we need
+                var expectedCategories = []
+                if (systemData && systemData.categoryList && systemData.categoryList.length > 0) {
+                    expectedCategories = systemData.categoryList
+                }
+                
+                // Count how many expected categories we have results for (excluding "Unknown")
+                var completedCategories = 0
+                for (var i = 0; i < expectedCategories.length; i++) {
+                    if (multiCategoryResults.hasOwnProperty(expectedCategories[i])) {
+                        completedCategories++
+                    }
+                }
+                
+                console.log("Multi-category progress:", completedCategories, "/", expectedCategories.length, "categories completed")
+                
+                // ONLY combine when we have ALL expected categories AND no pending queries AND not already combined
+                // This prevents premature combining when we get "Unknown" results first
+                if (completedCategories >= expectedCategories.length && pendingCategoryQueries <= 0 && !multiCategoryCombined) {
+                    console.log("All categories received - combining results now")
+                    multiCategoryCombined = true  // Prevent multiple calls
+                    combineMultipleCategoryResults()
+                } else {
+                    console.log("Waiting for more categories - completed:", completedCategories, "expected:", expectedCategories.length, "pending:", pendingCategoryQueries, "already combined:", multiCategoryCombined)
+                }
+            } else {
+                // Single category result - use existing logic
+                systemInfo = sysInfo
+                
+                // Clear infinite loop protection since we got a result
+                if (categoryDataLoadingInProgress) {
+                    categoryDataLoadingInProgress = false
+                    categoryLoadTimeoutTimer.stop()  // Stop the safety timer
+                    console.log("Single category result received - clearing infinite loop protection")
+                }
+                
+                updateSystemDisplay()
+            }
         }
     }
 
@@ -422,6 +512,12 @@ ApplicationWindow {
     }
     
     function checkIfNeedDefaultData() {
+        // EMERGENCY GUARD: Prevent infinite loop
+        if (categoryDataLoadingInProgress) {
+            console.log("checkIfNeedDefaultData: Already loading category data - preventing infinite loop")
+            return
+        }
+        
         // decide whether default data is needed
         
         // Only load default data if edited flag is false/undefined AND we don't have default data yet
@@ -431,34 +527,141 @@ ApplicationWindow {
             // not edited => maybe need default
             
             if (!systemInfo || !systemInfo.hasOwnProperty('system_info')) {
-                // load from category table
+                // No system_info at all - load from category table
                 needsDefaultData = true
+                console.log("checkIfNeedDefaultData: No system_info found - will load category table data")
             } else {
-                // already have default
+                // We have system_info - use it as-is regardless of content  
+                // The database administrator knows what data should be there
+                console.log("checkIfNeedDefaultData: Found system_info data (", (systemInfo.system_info || "").length, "chars) - using it as-is")
             }
         } else {
             // edited => skip default
+            console.log("checkIfNeedDefaultData: System is edited - using custom data, skipping category table")
         }
         
-        // Get category from systemData instead of relying on empty category property
-        var actualCategory = ""
+        // Get ALL categories from systemData - this is the key fix!
+        var categories = []
         if (systemData && systemData.categoryList && systemData.categoryList.length > 0) {
-            actualCategory = systemData.categoryList[0]
+            categories = systemData.categoryList
         } else if (systemData && systemData.category) {
-            actualCategory = systemData.category
+            categories = [systemData.category]
         }
         
-        if (needsDefaultData && actualCategory) {
-            // load default by category
-            console.log("Loading default system info for category:", actualCategory)
-            try {
-                edrhController.supabaseClient.getSystemInformation(systemName, actualCategory)
-            } catch (error) {
-                console.error("Error loading default system info:", error)
+        if (needsDefaultData && categories.length > 0) {
+            // Set flag to prevent infinite loop with automatic timeout
+            categoryDataLoadingInProgress = true
+            console.log("checkIfNeedDefaultData: Starting category data loading - setting infinite loop protection")
+            
+            // Safety timeout to clear the flag after 10 seconds in case something goes wrong
+            categoryLoadTimeoutTimer.restart()
+            
+            // Initialize storage for multiple category results
+            multiCategoryResults = {}
+            pendingCategoryQueries = 0
+            multiCategoryCombined = false  // Reset combination flag
+            
+            // Load data for ALL categories, not just the first one
+            for (var i = 0; i < categories.length; i++) {
+                var cat = categories[i]
+                if (cat && cat.trim() !== "") {
+                    console.log("Loading default system info for category " + (i+1) + "/" + categories.length + ":", cat)
+                    pendingCategoryQueries++
+                    try {
+                        edrhController.supabaseClient.getSystemInformation(systemName, cat)
+                    } catch (error) {
+                        console.error("Error loading default system info for category " + cat + ":", error)
+                        pendingCategoryQueries--
+                        
+                        // If all queries failed, clear the flag
+                        if (pendingCategoryQueries <= 0) {
+                            categoryDataLoadingInProgress = false
+                            console.log("checkIfNeedDefaultData: All queries failed - clearing infinite loop protection")
+                        }
+                    }
+                }
             }
         }
         
         // end decision
+    }
+    
+    function combineMultipleCategoryResults() {
+        console.log("Combining multiple category results...")
+        
+        // Get expected categories from systemData
+        var expectedCategories = []
+        if (systemData && systemData.categoryList && systemData.categoryList.length > 0) {
+            expectedCategories = systemData.categoryList
+        }
+        
+        if (expectedCategories.length === 0) {
+            console.log("No expected categories to combine")
+            return
+        }
+        
+        // Create combined system info object
+        var combinedSystemInfo = {
+            hasInformation: true,
+            systemName: systemName,
+            system_info: "",
+            category: expectedCategories.join(" and "),
+            isMultiCategory: true  // Flag to prevent future overwrites
+        }
+        
+        var combinedText = []
+        
+        // Process ONLY the expected categories in order (not all keys in multiCategoryResults)
+        for (var i = 0; i < expectedCategories.length; i++) {
+            var categoryName = expectedCategories[i]
+            var categoryResult = multiCategoryResults[categoryName]
+            
+            console.log("Processing expected category:", categoryName)
+            
+            if (!categoryResult) {
+                console.log("WARNING: No result found for expected category:", categoryName)
+                continue
+            }
+            
+            // Skip "Unknown" categories that have no real data
+            if (categoryName === "Unknown" && (!categoryResult || !categoryResult.system_info || categoryResult.system_info.indexOf("No additional information") >= 0)) {
+                console.log("Skipping empty Unknown category")
+                continue
+            }
+            
+            // Add category header with === format
+            combinedText.push("=== " + categoryName + " ===")
+            
+            // Add the category's system info (strip any duplicate category headers)
+            if (categoryResult && categoryResult.system_info) {
+                var infoText = categoryResult.system_info
+                // Remove duplicate "Category: X" lines since we have === headers ===
+                infoText = infoText.replace(/^Category:\s*[^\n]*\n?\n?/i, "")
+                combinedText.push(infoText)
+            } else {
+                combinedText.push("No additional information available for this category.")
+            }
+            
+            // Add blank line between categories (except for the last one)
+            if (i < expectedCategories.length - 1) {
+                combinedText.push("")
+            }
+        }
+        
+        combinedSystemInfo.system_info = combinedText.join("\n")
+        
+        console.log("Combined system info created with", expectedCategories.length, "expected categories")
+        console.log("Final combined text length:", combinedSystemInfo.system_info.length)
+        
+        // Set the combined result and update display
+        systemInfo = combinedSystemInfo
+        updateSystemDisplay()
+        
+        // Mark that we've successfully combined and clear infinite loop protection
+        pendingCategoryQueries = 0
+        categoryDataLoadingInProgress = false
+        categoryLoadTimeoutTimer.stop()  // Stop the safety timer
+        console.log("Multi-category combination complete - clearing infinite loop protection")
     }
     
     function saveEditInfoData() {
@@ -710,6 +913,17 @@ ApplicationWindow {
     // Center the popup on screen
     x: (Screen.width - width) / 2
     y: (Screen.height - height) / 2
+    
+    // Clean up multi-category data when popup closes
+    onClosing: {
+        console.log("SystemViewPopup closing - cleaning up multi-category data")
+        multiCategoryResults = {}
+        pendingCategoryQueries = 0
+        multiCategoryCombined = false
+        updateSystemDisplayInProgress = false  // Clear debounce flag
+        categoryDataLoadingInProgress = false  // Clear infinite loop protection
+        categoryLoadTimeoutTimer.stop()       // Stop safety timer
+    }
     
     title: systemName
     modality: Qt.ApplicationModal
@@ -1447,34 +1661,27 @@ ApplicationWindow {
     }
     
     function updateSystemDisplay() {
+        // GUARD 1: Prevent duplicate calls from multiple connection handlers
+        if (updateSystemDisplayInProgress) {
+            console.log("updateSystemDisplay: Already in progress, skipping duplicate call")
+            return
+        }
+        
+        // GUARD 2: Skip updateSystemDisplay during active multi-category processing to prevent duplicates
+        if (pendingCategoryQueries > 0 && !multiCategoryCombined) {
+            console.log("updateSystemDisplay: Skipping during active multi-category processing (pending:", pendingCategoryQueries, "combined:", multiCategoryCombined, ")")
+            return
+        }
+        
+        // Set debounce flag
+        updateSystemDisplayInProgress = true
+        
         var displayText = ""
         
-        // Check if we have multiple categories with system information
-        if (systemData && systemData.categoryList && systemData.categoryList.length >= 2) {
-            var uniqueCategories = []
-            for (var i = 0; i < systemData.categoryList.length; i++) {
-                if (uniqueCategories.indexOf(systemData.categoryList[i]) === -1) {
-                    uniqueCategories.push(systemData.categoryList[i])
-                }
-            }
-            
-            // Build system info text for each category
-            for (var j = 0; j < uniqueCategories.length; j++) {
-                if (j > 0) displayText += "\n\n" // Add spacing between categories
-                
-                displayText += "=== " + uniqueCategories[j] + " ===\n"
-                
-                // Add category-specific information (you can expand this based on your data structure)
-                displayText += "Category: " + uniqueCategories[j] + "\n"
-                displayText += "System: " + systemName + "\n"
-                
-                // Add any additional category-specific details here
-                if (systemInfo && systemInfo.system_info) {
-                    displayText += "Details: " + systemInfo.system_info + "\n"
-                }
-            }
-            
-            systemInfoText.text = displayText
+        // Check if this is properly combined multi-category data
+        if (systemInfo && systemInfo.isMultiCategory && systemInfo.system_info) {
+            // Use the properly combined system info directly
+            systemInfoText.text = systemInfo.system_info
         } else {
             // SMART FALLBACK LOGIC - THIS IS THE KEY FIX!
             var useCustomInfo = false
@@ -1549,6 +1756,9 @@ ApplicationWindow {
         console.log("updateSystemDisplay completed - edited flag:", editedFlag, "useCustomInfo:", useCustomInfo)
         console.log("Final systemInfoText.text:", systemInfoText.text)
         console.log("=== END HELLO my name is burger - DISPLAY COMPLETE ===")
+        
+        // Clear debounce flag at the end
+        updateSystemDisplayInProgress = false
     }
     
     // Timer to debounce checkClaimStatus calls and prevent oscillation
@@ -2161,11 +2371,10 @@ ApplicationWindow {
                             }
                         }
                         
-                        // System Information Display
+                        // System Information Display - Dynamic height to fit all content
                         Rectangle {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: Math.max(300, systemInfoColumn.implicitHeight)
-                            Layout.minimumHeight: 300
+                            Layout.preferredHeight: systemInfoColumn.implicitHeight + 30  // Expand to fit content + margins
                             color: "#1f1f1f"
                             radius: 8
                             
@@ -2187,7 +2396,6 @@ ApplicationWindow {
                                 Text {
                                     id: systemInfoText
                                     Layout.fillWidth: true
-                                    Layout.fillHeight: true
                                     Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                                     text: "Loading system information..."
                                     font.pixelSize: 13

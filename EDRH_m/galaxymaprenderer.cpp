@@ -466,9 +466,7 @@ void GalaxyMapRenderer::loadBackgroundImage()
         QString(":/%1").arg(m_backgroundImage),  // Resource path
         QString("qrc:/%1").arg(m_backgroundImage),  // QRC resource
         m_backgroundImage,  // Direct path
-        QString("%1/%2").arg(QDir::currentPath(), m_backgroundImage),  // Current dir
-        QString("C:/Users/Admin/Documents/GitHub/Project/EDRH_m/%1").arg(m_backgroundImage),  // Updated full path
-        QString("C:/Users/Admin/Downloads/EDRH_redo/EDRH_m/%1").arg(m_backgroundImage)  // Old full path
+        QString("%1/%2").arg(QDir::currentPath(), m_backgroundImage)  // Current dir
     };
     
     m_backgroundLoaded = false;

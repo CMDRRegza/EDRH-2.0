@@ -251,9 +251,7 @@ Rectangle {
                 // Try multiple source paths if first fails
                 property var imageSources: [
                     "qrc:/assets/E47CDFX.png",
-                    "file:///C:/Users/Admin/Downloads/EDRH_redo/EDRH_m/assets/E47CDFX.png",
-                    "assets/E47CDFX.png",
-                    "file:assets/E47CDFX.png"
+                    "assets/E47CDFX.png"
                 ]
                 property int currentSourceIndex: 0
                 

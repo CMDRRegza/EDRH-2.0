@@ -78,12 +78,14 @@ int main(int argc, char *argv[])
         qInstallMessageHandler(messageHandler);
         
         qDebug() << "=== EDRH APPLICATION STARTED ===";
-        qDebug() << "Application Version:" << "0.9.5";
+        // Get version from EDRHController for consistency
+        QString appVersion = "0.9.5";
+        qDebug() << "Application Version:" << appVersion;
         qDebug() << "Qt Version:" << QT_VERSION_STR;
     
     // Set application properties
     app.setApplicationName("EDRH - Elite Dangerous Records Helper");
-    app.setApplicationVersion("0.9.5");
+    app.setApplicationVersion(appVersion);
     app.setOrganizationName("EDRH");
     
     // Set the application icon
@@ -104,7 +106,17 @@ int main(int argc, char *argv[])
     // Set up the configuration connections BEFORE loading QML
     // This ensures the signal connection is ready when QML calls loadConfig()
     QObject::connect(&configManager, &ConfigManager::configLoaded, [&]() {
-        qDebug() << "Config loaded signal received, configuring components...";
+        qDebug() << "Config loaded signal received, checking journal verification status...";
+        
+        // CRITICAL FIX: Only proceed with initialization if journal is verified
+        // This prevents background initialization while commander verification dialog is waiting
+        if (!configManager.journalVerified()) {
+            qDebug() << "Journal NOT verified - PAUSING initialization until user confirms commander detection";
+            qDebug() << "Waiting for user to complete commander verification dialog...";
+            return; // STOP HERE - do not proceed with any initialization
+        }
+        
+        qDebug() << "Journal verified - proceeding with full component initialization...";
         
         // Configure Supabase client
         supabaseClient.configure(configManager.supabaseUrl(), configManager.supabaseKey());
@@ -139,10 +151,57 @@ int main(int argc, char *argv[])
         // Initialize smart database sync system
         supabaseClient.initializeDatabaseSync();
         
-        // NOW refresh data since SupabaseClient is configured
+        // Refresh data since journal is verified
+        qDebug() << "Journal verified - refreshing data since SupabaseClient is configured";
         controller.refreshData();
         
         qDebug() << "All components configured successfully";
+    });
+    
+    // CRITICAL FIX: Handle when journal verification status changes from false to true
+    // This triggers initialization after user confirms the commander detection dialog
+    QObject::connect(&configManager, &ConfigManager::journalVerifiedChanged, [&]() {
+        if (configManager.journalVerified()) {
+            qDebug() << "Journal verification became TRUE - triggering delayed initialization...";
+            
+            // Configure Supabase client
+            supabaseClient.configure(configManager.supabaseUrl(), configManager.supabaseKey());
+            controller.setSupabaseClient(&supabaseClient);
+            controller.setConfigManager(&configManager);
+            controller.setClaimManager(&claimManager);
+            
+            // Test admin access if service key is provided
+            if (!configManager.adminServiceKey().isEmpty()) {
+                // Connect to admin access test result
+                QObject::connect(&supabaseClient, &SupabaseClient::adminAccessTestComplete,
+                                &configManager, &ConfigManager::setAdminStatus);
+                
+                // Test admin access with the service key
+                supabaseClient.testAdminAccess(configManager.adminServiceKey());
+            }
+            
+            // Set up journal monitoring
+            journalMonitor.setJournalPath(configManager.journalPath());
+            controller.setJournalMonitor(&journalMonitor);
+            
+            // Connect SupabaseClient to ImageLoader for preset images
+            QObject::connect(&supabaseClient, &SupabaseClient::presetImagesReceived,
+                            &imageLoader, &ImageLoader::handlePresetImagesReceived);
+            
+            // Start monitoring
+            journalMonitor.startMonitoring();
+            
+            // Start preloading common images
+            imageLoader.preloadCommonImages();
+            
+            // Initialize smart database sync system
+            supabaseClient.initializeDatabaseSync();
+            
+            // Refresh data since journal is now verified
+            controller.refreshData();
+            
+            qDebug() << "Delayed initialization completed after journal verification";
+        }
     });
     
     // Create QML engine immediately to show splash screen

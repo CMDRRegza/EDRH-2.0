@@ -29,10 +29,14 @@ Item {
                 edrhController.loadGalaxyMapData()
             }
             
-            // Also try refreshData if no systems are available
+            // Also try refreshData if no systems are available, but only if journal is verified
             if (edrhController && (!edrhController.galaxyMapSystems || edrhController.galaxyMapSystems.length === 0)) {
-                if (typeof edrhController.refreshData === 'function') {
+                // Check journal verification status before attempting data refresh
+                if (typeof edrhController.refreshData === 'function' && configManager && configManager.journalVerified) {
+                    console.log("Galaxy Map: Journal verified, calling refreshData")
                     edrhController.refreshData()
+                } else {
+                    console.log("Galaxy Map: Journal not verified, skipping refreshData call")
                 }
             }
             
@@ -182,7 +186,13 @@ Item {
             // Check claim status filters (checkboxes) - like v1.4incomplete.py
             var claimed = system.claimed || false
             var claimedBy = system.claimedBy || ""
-            var poi = system.poi || ""
+            // Extract POI status - check both potential_or_poi (database field) and poi (legacy field)
+            var poi = ""
+            if (system.potential_or_poi && system.potential_or_poi.toString().trim() !== "") {
+                poi = system.potential_or_poi.toString()
+            } else if (system.poi && system.poi.toString().trim() !== "") {
+                poi = system.poi.toString()
+            }
             var currentCommander = edrhController.commanderName || "Regza"
             
             // If ANY checkboxes are checked, apply filtering. If NONE are checked, show NOTHING.
@@ -208,13 +218,21 @@ Item {
                 passesClaimFilter = true
             }
             if (showPotentialPOIsCheck.checked && poi === "Potential POI") {
+                console.log("  System", system.name, "matched Potential POI filter (poi:", poi + ")")
                 passesClaimFilter = true
             }
             if (showPOIsCheck.checked && poi === "POI") {
+                console.log("  System", system.name, "matched POI filter (poi:", poi + ")")
                 passesClaimFilter = true
             }
             if (showDoneSystemsCheck.checked && (system.status === "Done" || system.done === true)) {
+                console.log("  System", system.name, "matched Done Systems filter (status:", system.status, ", done:", system.done + ")")
                 passesClaimFilter = true
+            }
+            
+            // Debug: Log POI status for all systems to see what we're working with
+            if (showPotentialPOIsCheck.checked || showPOIsCheck.checked) {
+                console.log("  POI Debug - System:", system.name, "poi:", JSON.stringify(poi), "potential_or_poi:", JSON.stringify(system.potential_or_poi))
             }
             
             // If claim filters are active but this system doesn't pass, skip it

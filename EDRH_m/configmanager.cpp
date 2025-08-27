@@ -23,7 +23,7 @@ ConfigManager::ConfigManager(QObject *parent)
 void ConfigManager::initializeDefaults()
 {
     m_commanderName = "Unknown";
-    m_journalPath = "C:\\Users\\Admin\\Saved Games\\Frontier Developments\\Elite Dangerous";
+    m_journalPath = getDefaultJournalPath(); // Use auto-detection instead of hardcoded path
     m_currentSystem = "Unknown";
     m_supabaseUrl = "";
     m_supabaseKey = "";
@@ -38,6 +38,30 @@ QString ConfigManager::getConfigPath() const
     // Get the directory where the application is running
     QString appDir = QCoreApplication::applicationDirPath();
     return QDir(appDir).filePath("config.json");
+}
+
+QString ConfigManager::getDefaultJournalPath() const
+{
+    // Try standard Elite Dangerous locations for any user (same as journalmonitor.cpp)
+    QStringList possiblePaths = {
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/Frontier Developments/Elite Dangerous",
+        QDir::homePath() + "/Saved Games/Frontier Developments/Elite Dangerous",
+        "C:/Users/" + qgetenv("USERNAME") + "/Saved Games/Frontier Developments/Elite Dangerous"
+    };
+    
+    // Return the first path that exists
+    for (const QString &path : possiblePaths) {
+        QDir dir(path);
+        if (dir.exists()) {
+            qDebug() << "Auto-detected journal path:" << path;
+            return path;
+        }
+    }
+    
+    // If none exist, return the most common path as fallback (but don't hardcode "Admin")
+    QString fallbackPath = QDir::homePath() + "/Saved Games/Frontier Developments/Elite Dangerous";
+    qDebug() << "No existing journal paths found, using fallback:" << fallbackPath;
+    return fallbackPath;
 }
 
 bool ConfigManager::loadConfig()
@@ -71,7 +95,29 @@ bool ConfigManager::loadConfig()
     
     // Load configuration values
     m_commanderName = m_configData.value("commander_name").toString("Unknown");
-    m_journalPath = m_configData.value("journal_path").toString("C:\\Users\\Admin\\Saved Games\\Frontier Developments\\Elite Dangerous");
+    
+    // Handle journal path with auto-detection and persistence
+    QString configJournalPath = m_configData.value("journal_path").toString();
+    if (configJournalPath.isEmpty()) {
+        // Auto-detect and save the path for future use
+        m_journalPath = getDefaultJournalPath();
+        qDebug() << "Auto-detected journal path (will be saved):" << m_journalPath;
+        
+        // Save the auto-detected path back to config for persistence
+        m_configData["journal_path"] = m_journalPath;
+        
+        // Write the updated config immediately so the path persists
+        QJsonDocument doc(m_configData);
+        QFile file(m_configFilePath);
+        if (file.open(QIODevice::WriteOnly)) {
+            file.write(doc.toJson());
+            file.close();
+            qDebug() << "Auto-detected journal path saved to config.json";
+        }
+    } else {
+        m_journalPath = configJournalPath;
+    }
+    
     m_currentSystem = m_configData.value("current_journal").toString("Unknown");
     m_supabaseUrl = m_configData.value("supabase_url").toString();
     m_supabaseKey = m_configData.value("supabase_key").toString();
@@ -151,7 +197,17 @@ void ConfigManager::setJournalPath(const QString &path)
 {
     if (m_journalPath != path) {
         m_journalPath = path;
+        qDebug() << "Setting journal path to:" << path;
+        qDebug() << "Config file path for save:" << m_configFilePath;
+        
+        // Save config immediately to persist the change
+        bool saveSuccess = saveConfig();
+        qDebug() << "Config save result for journal_path update:" << (saveSuccess ? "SUCCESS" : "FAILED");
+        
         emit journalPathChanged();
+        qDebug() << "Journal path set to:" << path << "and saved to config";
+    } else {
+        qDebug() << "Journal path already set to:" << path << ", no change needed";
     }
 }
 
@@ -167,10 +223,17 @@ void ConfigManager::setJournalVerified(bool verified)
 {
     if (m_journalVerified != verified) {
         m_journalVerified = verified;
+        qDebug() << "Setting journal verification to:" << verified << "from" << !verified;
+        qDebug() << "Config file path for save:" << m_configFilePath;
+        
         // Save config immediately to persist the change
-        saveConfig();
+        bool saveSuccess = saveConfig();
+        qDebug() << "Config save result for journal_verified update:" << (saveSuccess ? "SUCCESS" : "FAILED");
+        
         emit journalVerifiedChanged();
         qDebug() << "Journal verification set to:" << verified << "and saved to config";
+    } else {
+        qDebug() << "Journal verification already set to:" << verified << ", no change needed";
     }
 }
 
