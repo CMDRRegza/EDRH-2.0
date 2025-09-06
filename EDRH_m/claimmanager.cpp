@@ -17,12 +17,20 @@ void ClaimManager::initialize(SupabaseClient *supabaseClient, const QString &com
     m_supabaseClient = supabaseClient;
     m_commanderName = commanderName;
     
-    qDebug() << "ClaimManager: Initialized for commander" << commanderName;
+    qDebug() << "CLAIMS COUNTER DEBUG: ClaimManager initialized for commander:" << commanderName;
+    qDebug() << "CLAIMS COUNTER DEBUG: Current taken systems count:" << m_takenSystemsData.size();
     
     // Connect to Supabase signals
     if (m_supabaseClient) {
         connect(m_supabaseClient, &SupabaseClient::takenSystemsReceived,
                 this, &ClaimManager::onTakenSystemsReceived);
+        qDebug() << "CLAIMS COUNTER DEBUG: Connected to takenSystemsReceived signal";
+        
+        // CRITICAL FIX: Force data refresh on initialization
+        qDebug() << "CLAIMS COUNTER DEBUG: Forcing initial data refresh";
+        refreshClaimData();
+    } else {
+        qDebug() << "CLAIMS COUNTER DEBUG: No SupabaseClient available for signal connection!";
     }
     
     // Query current claim on initialization
@@ -144,14 +152,36 @@ bool ClaimManager::hasActiveClaim() const
 int ClaimManager::getClaimCount() const
 {
     int count = 0;
+
+    qDebug() << "CLAIMS COUNTER DEBUG: getClaimCount() called - checking" << m_takenSystemsData.size() << "systems for commander:" << m_commanderName;
+
+    // Add case-insensitive comparison and debug any empty commander names
+    QString targetCommander = m_commanderName.trimmed();
+    if (targetCommander.isEmpty()) {
+        qDebug() << "CLAIMS COUNTER DEBUG: WARNING: Commander name is empty! Claims will always be 0.";
+        return 0;
+    }
+    
+    if (m_takenSystemsData.isEmpty()) {
+        qDebug() << "CLAIMS COUNTER DEBUG: WARNING: No taken systems data available! This suggests data hasn't been loaded yet.";
+        return 0;
+    }
+
     for (const QJsonValue &value : m_takenSystemsData) {
         QJsonObject system = value.toObject();
-        QString commander = system["by_cmdr"].toString();
-        if (commander == m_commanderName) {
+        QString commander = system["by_cmdr"].toString().trimmed();
+        QString systemName = system["system"].toString();
+        bool done = system["done"].toBool();
+
+        if (commander.compare(targetCommander, Qt::CaseInsensitive) == 0) {
+            qDebug() << "  CLAIMS COUNTER DEBUG: MATCH: System" << systemName << "claimed by" << commander << "done:" << done;
             count++;
+        } else if (!commander.isEmpty() && count < 3) {  // Only log first few non-matches to avoid spam
+            qDebug() << "  CLAIMS COUNTER DEBUG: SKIP: System" << systemName << "claimed by" << commander << "(not" << targetCommander << ")";
         }
     }
-    qDebug() << "ClaimManager: getClaimCount() returning" << count << "total claims for" << m_commanderName;
+
+    qDebug() << "CLAIMS COUNTER DEBUG: getClaimCount() returning" << count << "total claims for" << targetCommander;
     return count;
 }
 
@@ -208,7 +238,7 @@ bool ClaimManager::isSystemClaimedByUser(const QString &systemName)
 
 void ClaimManager::refreshClaimData()
 {
-    qDebug() << "ClaimManager: Refreshing claim data";
+    qDebug() << "ClaimManager: Refreshing claim data for commander:" << m_commanderName;
     
     if (!m_supabaseClient) {
         qDebug() << "ClaimManager: No SupabaseClient available";
@@ -219,6 +249,7 @@ void ClaimManager::refreshClaimData()
     m_supabaseClient->getTakenSystems();
     
     qDebug() << "ClaimManager: Requested taken systems from database";
+    qDebug() << "CLAIMS COUNTER DEBUG: Current data size before refresh:" << m_takenSystemsData.size();
 }
 
 QString ClaimManager::getClaimStatusDebug(const QString &systemName)
@@ -332,17 +363,45 @@ bool ClaimManager::validateClaimOperation(const QString &operation)
 
 void ClaimManager::onTakenSystemsReceived(const QJsonArray &taken)
 {
-    qDebug() << "ClaimManager: Received" << taken.size() << "taken systems";
+    qDebug() << "CLAIMS COUNTER DEBUG: Received" << taken.size() << "taken systems for commander:" << m_commanderName;
     
     // CRITICAL FIX: Only update for complete datasets, not single-system queries
     // Single-system queries (0-1 items) are from SystemViewPopup and should not corrupt complete data
     if (taken.size() > 10) {  // Complete dataset has ~396 systems, single queries have 0-1
-        qDebug() << "ClaimManager: Complete dataset detected - updating claim data";
+        qDebug() << "CLAIMS COUNTER DEBUG: Complete dataset detected - updating claim data";
         
         m_takenSystemsData = taken;
         
+        // Count claims for debugging
+        int claimCount = 0;
+        for (const QJsonValue &value : taken) {
+            QJsonObject system = value.toObject();
+            QString systemName = system["system"].toString();
+            QString claimedBy = system["by_cmdr"].toString().trimmed();
+            bool done = system["done"].toBool();
+            
+            if (claimedBy.compare(m_commanderName.trimmed(), Qt::CaseInsensitive) == 0) {
+                claimCount++;
+                if (claimCount <= 5) { // Only log first 5 to avoid spam
+                    qDebug() << "  CLAIMS COUNTER DEBUG: Found claim:" << systemName << "by:" << claimedBy << "done:" << done;
+                }
+            }
+        }
+        qDebug() << "CLAIMS COUNTER DEBUG: Found" << claimCount << "total claims for commander:" << m_commanderName;
+        
         // Re-query our current claim with fresh data
         queryCurrentClaim();
+        
+        // CRITICAL FIX: Emit signal to update UI claim count statistics
+        qDebug() << "CLAIMS COUNTER DEBUG: About to emit claimStatusChanged signal to update UI";
+        QString dummyClaimedBy = "";  // Not used for this signal type
+        emit claimStatusChanged("", false, dummyClaimedBy);  // Signal UI to refresh all statistics
+        qDebug() << "CLAIMS COUNTER DEBUG: claimStatusChanged signal emitted";
+    } else if (taken.size() == 0) {
+        qDebug() << "CLAIMS COUNTER DEBUG: Empty dataset received - this might be the initial state or an error";
+        // Still emit signal to update UI, even if no data
+        QString dummyClaimedBy = "";
+        emit claimStatusChanged("", false, dummyClaimedBy);
     } else {
         qDebug() << "ClaimManager: Single-system query detected - ignoring to prevent data corruption";
         qDebug() << "ClaimManager: Preserving existing dataset of" << m_takenSystemsData.size() << "systems";

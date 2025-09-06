@@ -305,41 +305,35 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
                             // Update commander location in database
                             updateCommanderLocation();
                             
-                            // **PERFORMANCE FIX**: Only recalculate if we have session tracking active
-                            // During journal initialization, we get many historical jumps that spam the database
-                            if (m_sessionJumpTrackingActive && !m_nearestSystems.isEmpty()) {
-                                if (!wasValidBefore) {
-                                qDebug() << "First valid position detected, recalculating distances for" << m_nearestSystems.size() << "systems";
-                                } else {
-                                    qDebug() << "Position updated from FSD jump, recalculating distances for" << m_nearestSystems.size() << "systems";
-                                }
-                                QJsonArray systemsArray;
-                                for (const QVariant &systemVariant : m_nearestSystems) {
-                                    QVariantMap systemMap = systemVariant.toMap();
-                                    QJsonObject systemObj;
-                                    systemObj["name"] = systemMap.value("name").toString();
-                                    systemObj["category"] = systemMap.value("category").toString();
-                                    systemObj["x"] = systemMap.value("x").toDouble();
-                                    systemObj["y"] = systemMap.value("y").toDouble();
-                                    systemObj["z"] = systemMap.value("z").toDouble();
-                                    systemObj["poi"] = systemMap.value("poi").toString();
-                                    systemObj["done"] = systemMap.value("done").toBool();
-                                    systemObj["claimed"] = systemMap.value("claimed").toBool();
-                                    systemObj["claimedBy"] = systemMap.value("claimedBy").toString();
-                                    systemsArray.append(systemObj);
-                                }
-                                handleSystemsReceived(systemsArray);
-                            } else if (!m_sessionJumpTrackingActive) {
-                                qDebug() << "Skipping distance recalculation during journal initialization";
-                            }
+                                                // **CRITICAL FIX**: Get fresh data from database with updated commander position
+                    // instead of just recalculating existing data to prevent coordinate mismatch
+                    if (m_sessionJumpTrackingActive) {
+                        if (!wasValidBefore) {
+                            qDebug() << "First valid position detected, fetching fresh systems with updated distance calculations";
+                        } else {
+                            qDebug() << "Position updated from FSD jump, fetching fresh systems with updated distance calculations";
+                        }
+                        // Use updateNearestSystems to get fresh data with correct distances from new position
+                        updateNearestSystems();
+                    } else if (!m_sessionJumpTrackingActive) {
+                        qDebug() << "Skipping distance recalculation during journal initialization";
+                    }
                         }
                     }
                     
-                    // Only count jumps after initial journal processing is complete
+                    // Only count jumps after initial journal processing is complete AND ignore historical jumps
                     if (m_sessionJumpTrackingActive) {
-                        m_jumpCount++;
-                        emit jumpCountChanged();
-                        qDebug() << "Session jump count:" << m_jumpCount;
+                        // Double check: ensure this is a real-time jump, not historical
+                        QDateTime now = QDateTime::currentDateTime();
+                        QDateTime sessionStart = QDateTime::fromMSecsSinceEpoch(m_sessionStartTime);
+                        
+                        if (now.secsTo(sessionStart) < -10) { // If session started more than 10 seconds ago, count the jump
+                            m_jumpCount++;
+                            emit jumpCountChanged();
+                            qDebug() << "JUMP COUNTER DEBUG: Real-time jump counted, new count:" << m_jumpCount;
+                        } else {
+                            qDebug() << "JUMP COUNTER DEBUG: Ignoring potentially historical jump (session too new)";
+                        }
                     } else {
                         qDebug() << "Ignoring jump during initial journal processing";
                     }
@@ -364,35 +358,29 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
                             
                             // **PERFORMANCE FIX**: Only recalculate if we have session tracking active
                             // During journal initialization, we get many historical jumps that spam the database
-                            if (m_sessionJumpTrackingActive && !m_nearestSystems.isEmpty()) {
-                                qDebug() << "Position updated from carrier jump, recalculating distances for" << m_nearestSystems.size() << "systems";
-                                QJsonArray systemsArray;
-                                for (const QVariant &systemVariant : m_nearestSystems) {
-                                    QVariantMap systemMap = systemVariant.toMap();
-                                    QJsonObject systemObj;
-                                    systemObj["name"] = systemMap.value("name").toString();
-                                    systemObj["category"] = systemMap.value("category").toString();
-                                    systemObj["x"] = systemMap.value("x").toDouble();
-                                    systemObj["y"] = systemMap.value("y").toDouble();
-                                    systemObj["z"] = systemMap.value("z").toDouble();
-                                    systemObj["poi"] = systemMap.value("poi").toString();
-                                    systemObj["done"] = systemMap.value("done").toBool();
-                                    systemObj["claimed"] = systemMap.value("claimed").toBool();
-                                    systemObj["claimedBy"] = systemMap.value("claimedBy").toString();
-                                    systemsArray.append(systemObj);
-                                }
-                                handleSystemsReceived(systemsArray);
+                            if (m_sessionJumpTrackingActive) {
+                                qDebug() << "Position updated from carrier jump, fetching fresh systems with updated distance calculations";
+                                // Use updateNearestSystems to get fresh data with correct distances from new position
+                                updateNearestSystems();
                             } else if (!m_sessionJumpTrackingActive) {
                                 qDebug() << "Skipping distance recalculation during journal initialization";
                             }
                         }
                     }
                     
-                    // Only count carrier jumps after initial journal processing is complete
+                    // Only count carrier jumps after initial journal processing is complete AND ignore historical jumps
                     if (m_sessionJumpTrackingActive) {
-                        m_jumpCount++;
-                        emit jumpCountChanged();
-                        qDebug() << "Session jump count (carrier):" << m_jumpCount;
+                        // Double check: ensure this is a real-time jump, not historical
+                        QDateTime now = QDateTime::currentDateTime();
+                        QDateTime sessionStart = QDateTime::fromMSecsSinceEpoch(m_sessionStartTime);
+                        
+                        if (now.secsTo(sessionStart) < -10) { // If session started more than 10 seconds ago, count the jump
+                            m_jumpCount++;
+                            emit jumpCountChanged();
+                            qDebug() << "JUMP COUNTER DEBUG: Real-time carrier jump counted, new count:" << m_jumpCount;
+                        } else {
+                            qDebug() << "JUMP COUNTER DEBUG: Ignoring potentially historical carrier jump (session too new)";
+                        }
                     } else {
                         qDebug() << "Ignoring carrier jump during initial journal processing";
                     }
@@ -400,10 +388,21 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
         
         qDebug() << "EDRHController connected to JournalMonitor";
         
-        // Start session jump tracking after a short delay to allow initial journal processing
+        // Start session jump tracking after allowing journal initialization to complete
+        // EXTENDED FIX: 3000ms delay - historical journal processing takes time
         QTimer::singleShot(3000, this, [this]() {
+            qDebug() << "JUMP COUNTER DEBUG: Before reset - m_jumpCount:" << m_jumpCount;
+            
+            // CRITICAL FIX: Reset jump count FIRST, then activate tracking to prevent race conditions
+            m_jumpCount = 0;
+            emit jumpCountChanged();
+            
+            qDebug() << "JUMP COUNTER DEBUG: After reset - m_jumpCount:" << m_jumpCount;
+            
+            // Only activate tracking after ensuring count is reset
             m_sessionJumpTrackingActive = true;
-            qDebug() << "Session jump tracking activated";
+            
+            qDebug() << "JUMP COUNTER DEBUG: Session jump tracking activated - jump count reset to 0, tracking now active";
         });
     }
 }
@@ -882,9 +881,20 @@ void EDRHController::getSystemFromEDSM(const QString &systemName)
             
             // Calculate distance if we have commander position
             if (m_hasValidPosition) {
-                double dx = coords.value("x").toDouble() - m_commanderX;
-                double dy = coords.value("y").toDouble() - m_commanderY;
-                double dz = coords.value("z").toDouble() - m_commanderZ;
+                // CRITICAL FIX: Round coordinates to Elite Dangerous' 1/32 LY grid system
+                double roundTo32nd = 32.0;
+                
+                // Round system and commander coordinates to nearest 1/32 LY increment
+                double sys_x = qRound(coords.value("x").toDouble() * roundTo32nd) / roundTo32nd;
+                double sys_y = qRound(coords.value("y").toDouble() * roundTo32nd) / roundTo32nd;
+                double sys_z = qRound(coords.value("z").toDouble() * roundTo32nd) / roundTo32nd;
+                double cmd_x = qRound(m_commanderX * roundTo32nd) / roundTo32nd;
+                double cmd_y = qRound(m_commanderY * roundTo32nd) / roundTo32nd;
+                double cmd_z = qRound(m_commanderZ * roundTo32nd) / roundTo32nd;
+                
+                double dx = sys_x - cmd_x;
+                double dy = sys_y - cmd_y;
+                double dz = sys_z - cmd_z;
                 double distance = sqrt(dx*dx + dy*dy + dz*dz);
                 mappedData["distance"] = QString::number(distance, 'f', 2) + " LY";
             } else {
@@ -1452,7 +1462,10 @@ void EDRHController::handleSystemsReceived(const QJsonArray &systems)
         
         if (m_hasValidPosition && x != 0.0 && y != 0.0 && z != 0.0) {
             // Calculate distance from current commander position
-            double distance = qSqrt(qPow(x - m_commanderX, 2) + qPow(y - m_commanderY, 2) + qPow(z - m_commanderZ, 2));
+            double dx = x - m_commanderX;
+            double dy = y - m_commanderY;
+            double dz = z - m_commanderZ;
+            double distance = qSqrt(dx*dx + dy*dy + dz*dz);
             systemMap["distance"] = QString::number(distance, 'f', 1) + " LY";
         } else {
             // No position or coordinates available
@@ -1599,8 +1612,10 @@ void EDRHController::handleNearestSystemsReceived(const QJsonArray &systems)
             systemMap["category"] = formatCategoriesForDisplay(categoryList);
             systemMap["categoryColor"] = getCategoryColorForMulti(categoryList);
             
-            // Distance is already formatted as string in transformed data
-            systemMap["distance"] = system.value("distance").toString();
+            // CRITICAL FIX: Only use cached distance if no fresh calculation exists
+            if (!systemMap.contains("distance") || systemMap["distance"].toString().isEmpty()) {
+                systemMap["distance"] = system.value("distance").toString();
+            }
             
             // Get POI status from loaded POI data instead of hardcoding
             QString poiStatus = "";

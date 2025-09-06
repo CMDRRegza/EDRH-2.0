@@ -207,7 +207,15 @@ ApplicationWindow {
             if (!systemData || typeof systemData !== 'object') {
                 systemData = {}
             }
-            systemData.edited = false
+            
+            // CRITICAL FIX: Don't reset edited flag if user is currently editing
+            // Preserve user's active editing session during database updates
+            if (!(systemData.edited === true && customSystemInfo && customSystemInfo.trim() !== "")) {
+                systemData.edited = false
+            } else {
+                console.log("PROTECTION: Preserving edited state - user is currently editing")
+            }
+            
             systemData.claimed = false
             systemData.claimedBy = ""
         }
@@ -315,8 +323,34 @@ ApplicationWindow {
         if (x === undefined || y === undefined || z === undefined) {
             return "Distance: Unknown (no coordinates)"
         }
-        var distance = Math.sqrt(x*x + y*y + z*z)
-        return distance.toFixed(2) + " LY"
+        
+        // Get commander's current position for accurate distance calculation
+        if (edrhController && edrhController.hasValidPosition) {
+            // CRITICAL FIX: Round coordinates to Elite Dangerous' 1/32 LY grid system
+            var roundTo32nd = 32.0
+            
+            // Round system and commander coordinates to nearest 1/32 LY increment
+            var sys_x = Math.round(x * roundTo32nd) / roundTo32nd
+            var sys_y = Math.round(y * roundTo32nd) / roundTo32nd
+            var sys_z = Math.round(z * roundTo32nd) / roundTo32nd
+            var cmd_x = Math.round(edrhController.commanderX * roundTo32nd) / roundTo32nd
+            var cmd_y = Math.round(edrhController.commanderY * roundTo32nd) / roundTo32nd
+            var cmd_z = Math.round(edrhController.commanderZ * roundTo32nd) / roundTo32nd
+            
+            var dx = sys_x - cmd_x
+            var dy = sys_y - cmd_y
+            var dz = sys_z - cmd_z
+            var distance = Math.sqrt(dx*dx + dy*dy + dz*dz)
+            return distance.toFixed(2) + " LY"
+        } else {
+            // Fallback to Sol-relative distance if no commander position  
+            var roundTo32nd = 32.0
+            var rounded_x = Math.round(x * roundTo32nd) / roundTo32nd
+            var rounded_y = Math.round(y * roundTo32nd) / roundTo32nd
+            var rounded_z = Math.round(z * roundTo32nd) / roundTo32nd
+            var distance = Math.sqrt(rounded_x*rounded_x + rounded_y*rounded_y + rounded_z*rounded_z)
+            return distance.toFixed(2) + " LY (from Sol)"
+        }
     }
     
     function getCoordinatesText() {
@@ -1206,9 +1240,13 @@ ApplicationWindow {
                     }
                     
                     // Load custom system info - this is the user's edited content
-                    if (sysInfo.system_info !== undefined) {
+                    // CRITICAL FIX: Don't overwrite customSystemInfo if system is marked as edited
+                    // to prevent race condition where user's unsaved edits get overwritten by database response
+                    if (sysInfo.system_info !== undefined && !(systemData && systemData.edited === true)) {
                         customSystemInfo = sysInfo.system_info || ""
                         console.log("Loaded CUSTOM system info from database:", customSystemInfo)
+                    } else if (systemData && systemData.edited === true) {
+                        console.log("PROTECTION: Skipping customSystemInfo overwrite - system is marked as edited")
                     }
                     
                     // Load images from database
@@ -1340,8 +1378,20 @@ ApplicationWindow {
         
         function onEdsmSystemDataReceived(sysName, sysData) {
             if (sysName === systemName) {
+                // CRITICAL FIX: Preserve edited state during database updates
+                var wasEdited = (systemData && systemData.edited === true)
+                var wasCustomInfo = customSystemInfo
+                
                 // Update system data with EDSM information
                 systemData = sysData
+                
+                // Restore edited state if user was editing
+                if (wasEdited) {
+                    console.log("PROTECTION: Preserving edited state during database update")
+                    systemData.edited = true
+                    customSystemInfo = wasCustomInfo
+                }
+                
                 updateSystemDisplay()
             }
         }
@@ -1362,8 +1412,18 @@ ApplicationWindow {
                     
                     // Update systemData to reflect claimed status
                     if (systemData && typeof systemData === 'object') {
+                        // PROTECTION: Preserve edited state during claim updates
+                        var wasEdited = systemData.edited === true
+                        var wasCustomInfo = customSystemInfo
+                        
                         systemData.claimed = true
                         systemData.claimedBy = edrhController.commanderName
+                        
+                        // Restore edited state if user was editing
+                        if (wasEdited) {
+                            systemData.edited = true
+                            customSystemInfo = wasCustomInfo
+                        }
                     }
                     
                     // Start short cooldown before any re-check runs
@@ -1392,8 +1452,18 @@ ApplicationWindow {
                     
                     // Update systemData to reflect unclaimed status
                     if (systemData && typeof systemData === 'object') {
+                        // PROTECTION: Preserve edited state during unclaim updates
+                        var wasEdited = systemData.edited === true
+                        var wasCustomInfo = customSystemInfo
+                        
                         systemData.claimed = false
                         systemData.claimedBy = ""
+                        
+                        // Restore edited state if user was editing  
+                        if (wasEdited) {
+                            systemData.edited = true
+                            customSystemInfo = wasCustomInfo
+                        }
                     }
                     
                     // Start short cooldown before any re-check runs
@@ -1960,13 +2030,36 @@ ApplicationWindow {
                                         MouseArea {
                                             anchors.fill: parent
                                             cursorShape: Qt.PointingHandCursor
+                                            hoverEnabled: true
+                                            property bool hasBeenClicked: false
+                                            
+                                            onEntered: {
+                                                if (!hasBeenClicked) {
+                                                    parent.color = "#FFD700"  // Gold on hover
+                                                }
+                                            }
+                                            
+                                            onExited: {
+                                                hasBeenClicked = false  // Reset click state when mouse exits
+                                                parent.color = "#FFFFFF"  // White when not hovering
+                                            }
+                                            
                                             onClicked: {
                                                 edrhController.copyToClipboard(systemName)
                                                 copyPopup.messageText = "Copied: " + systemName
                                                 copyPopup.open()
+                                                
+                                                hasBeenClicked = true  // Prevent hover from reactivating
+                                                
+                                                // Smooth transition back to white after click
+                                                parent.color = "#FFFFFF"
                                             }
-                                            onEntered: parent.color = "#FFD700"
-                                            onExited: parent.color = "#FFFFFF"
+                                        }
+                                        
+                                        // Smooth animations for hover effects
+                                        Behavior on color {
+                                            id: colorBehavior
+                                            ColorAnimation { duration: 150; easing.type: Easing.OutQuad }
                                         }
                                     }
                                 }

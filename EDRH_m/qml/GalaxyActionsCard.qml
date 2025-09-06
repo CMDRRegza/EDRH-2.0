@@ -49,22 +49,26 @@ Rectangle {
                     Image {
                         anchors.fill: parent
                         anchors.margins: 1
-                        source: "qrc:/assets/E47CDFX.png"
+                        source: "qrc:/EDRH/assets/E47CDFX.png"  // Use correct qrc path as primary
                         fillMode: Image.PreserveAspectCrop
                         smooth: true
                         
                         // Fallback sources if main source fails
                         property var imageSources: [
-                            "qrc:/assets/E47CDFX.png",
-                            "assets/E47CDFX.png",
-                            "file:assets/E47CDFX.png"
+                            "qrc:/EDRH/assets/E47CDFX.png",  // Correct qrc path first
+                            "qrc:/assets/E47CDFX.png",       // Alternative qrc path
+                            "assets/E47CDFX.png"             // Local path last
                         ]
                         property int currentSourceIndex: 0
                         
                         onStatusChanged: {
+                            console.log("Galaxy image status changed:", status, "for source:", source)
                             if (status === Image.Error && currentSourceIndex < imageSources.length - 1) {
                                 currentSourceIndex++
+                                console.log("Trying fallback image source:", imageSources[currentSourceIndex])
                                 source = imageSources[currentSourceIndex]
+                            } else if (status === Image.Ready) {
+                                console.log("Galaxy image loaded successfully from:", source)
                             }
                         }
                         
@@ -173,6 +177,7 @@ Rectangle {
                     
                     // Claims stat
                     StatCard {
+                        id: claimsStatCard
                         Layout.fillWidth: true
                         Layout.preferredHeight: 75  // Increased from 50 to 75
                         Layout.maximumHeight: 75    // Prevent stretching
@@ -181,6 +186,95 @@ Rectangle {
                         value: edrhController.claimManager ? edrhController.claimManager.getClaimCount().toString() : "0"
                         icon: ""
                         accentColor: Theme.warningColor
+                        
+                        // Update when claim status changes
+                        Connections {
+                            target: edrhController.claimManager
+                            function onClaimStatusChanged(systemName, isClaimed, claimedBy) {
+                                console.log("UI DEBUG: claimStatusChanged signal received - systemName:", systemName, "isClaimed:", isClaimed)
+                                updateClaimsCounter()
+                            }
+                        }
+                        
+                        // Also listen for commander changes
+                        Connections {
+                            target: edrhController
+                            function onCommanderNameChanged() {
+                                console.log("UI DEBUG: Commander changed, refreshing claims count")
+                                updateClaimsCounter()
+                            }
+                        }
+                        
+                        // Function to update claims counter with proper validation
+                        function updateClaimsCounter() {
+                            console.log("UI DEBUG: updateClaimsCounter called")
+                            console.log("UI DEBUG: edrhController available:", edrhController ? "YES" : "NO")
+                            console.log("UI DEBUG: claimManager available:", edrhController.claimManager ? "YES" : "NO")
+                            
+                            if (edrhController && edrhController.claimManager) {
+                                var newCount = edrhController.claimManager.getClaimCount()
+                                console.log("UI DEBUG: getClaimCount() returned:", newCount)
+                                claimsStatCard.value = newCount.toString()
+                                console.log("UI DEBUG: Updated claimsStatCard.value to:", claimsStatCard.value)
+                                
+                                // Stop the retry timer once we get data
+                                if (retryTimer.running) {
+                                    console.log("UI DEBUG: Stopping retry timer - data received")
+                                    retryTimer.stop()
+                                }
+                            } else {
+                                console.log("UI DEBUG: Cannot update - claimManager not available")
+                            }
+                        }
+                        
+                        // Force update on component completion
+                        Component.onCompleted: {
+                            console.log("UI DEBUG: GalaxyActionsCard completed - setting up claim counter")
+                            console.log("UI DEBUG: edrhController:", edrhController ? "available" : "null")
+                            console.log("UI DEBUG: claimManager:", (edrhController && edrhController.claimManager) ? "available" : "null")
+                            
+                            // Try immediate update first
+                            updateClaimsCounter()
+                            
+                            // Start retry timer as backup
+                            retryTimer.start()
+                        }
+                        
+                        // Retry timer with timeout and data validation
+                        Timer {
+                            id: retryTimer
+                            interval: 200  // Increased interval to reduce spam
+                            repeat: true
+                            property int attempts: 0
+                            
+                            onTriggered: {
+                                attempts++
+                                console.log("UI DEBUG: Retry timer attempt", attempts, "- checking ClaimManager and data")
+                                
+                                if (edrhController && edrhController.claimManager) {
+                                    var currentCount = edrhController.claimManager.getClaimCount()
+                                    console.log("UI DEBUG: ClaimManager available! Current count:", currentCount)
+                                    
+                                    // Update the display regardless of count (could legitimately be 0)
+                                    claimsStatCard.value = currentCount.toString()
+                                    console.log("UI DEBUG: Updated claimsStatCard.value to:", claimsStatCard.value)
+                                    
+                                    // Stop timer after getting ANY result or after reasonable timeout
+                                    if (currentCount > 0 || attempts >= 50) {  // 10 seconds max
+                                        console.log("UI DEBUG: Stopping retry timer - count:", currentCount, "attempts:", attempts)
+                                        retryTimer.stop()
+                                    }
+                                } else {
+                                    console.log("UI DEBUG: ClaimManager still not available, attempt:", attempts)
+                                    
+                                    // Timeout after too many attempts
+                                    if (attempts >= 50) {  // 10 seconds max
+                                        console.log("UI DEBUG: Stopping retry timer - timeout reached")
+                                        retryTimer.stop()
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -64,28 +64,56 @@ void ImageLoader::loadImage(const QString &url, const QString &systemName)
     // Normalize Imgur URLs to direct image links
     QString normalizedUrl = normalizeImgurUrl(url);
     
+    // Check retry limit with more generous limits for better success rate
+    const int MAX_RETRIES = 7; // Increased from 3 to 7 for higher success rate
+    int retryCount = m_retryCount.value(normalizedUrl, 0);
+    if (retryCount >= MAX_RETRIES) {
+        qDebug() << "Image download failed permanently after" << MAX_RETRIES << "retries:" << normalizedUrl;
+        m_retryCount.remove(normalizedUrl); // Clean up
+        emit imageLoadFailed(normalizedUrl, QString("Failed after %1 retry attempts").arg(MAX_RETRIES));
+        return;
+    }
+    
     // Check if image is already cached
     if (isImageCached(normalizedUrl)) {
         QString cachedPath = getCachedImagePath(normalizedUrl);
         qDebug() << "Image found in cache:" << cachedPath;
+        m_retryCount.remove(normalizedUrl); // Clean up successful load
         emit imageLoaded(normalizedUrl, cachedPath);
         return;
     }
     
-    // Download the image
+    // Increment retry count for this attempt
+    m_retryCount[normalizedUrl] = retryCount + 1;
+    
+    // Download the image with optimizations for ImgBB
     QNetworkRequest request{QUrl(normalizedUrl)};
     request.setHeader(QNetworkRequest::UserAgentHeader, "EDRH/1.4.0-qt");
-    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
-    // Force HTTP/1.1 for hosts that misbehave with HTTP/2 (e.g., some CDN edges)
-    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+    
+    // IMGBB OPTIMIZATIONS: ImgBB is slow, so aggressive caching helps
+    if (normalizedUrl.contains("imgbb.com")) {
+        request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysCache);
+        request.setRawHeader("Cache-Control", "max-age=3600"); // Cache for 1 hour
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true); // HTTP/2 for ImgBB
+        request.setRawHeader("Connection", "keep-alive");
+    } else {
+        request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
+        // Force HTTP/1.1 for hosts that misbehave with HTTP/2 (e.g., some CDN edges)
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+    }
+    
     // Follow safe redirects automatically (ImgBB/Imgur sometimes redirect to CDN URLs)
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     
     QNetworkReply *reply = m_networkManager->get(request);
-    // Implement manual timeout (Qt 6.9 doesn't have QNetworkReply::setTransferTimeout)
+    // Implement manual timeout with exponential backoff for retries
     QTimer *timeoutTimer = new QTimer(reply);
     timeoutTimer->setSingleShot(true);
-    timeoutTimer->setInterval(15000);
+    
+    // Progressive timeout with ImgBB detection (ImgBB is notoriously slow!)
+    int baseTimeout = normalizedUrl.contains("imgbb.com") ? 15000 : 8000; // 15s for ImgBB, 8s for others
+    int timeoutMs = baseTimeout + (retryCount * 3000); // Base + 3s per retry
+    timeoutTimer->setInterval(timeoutMs);
     QObject::connect(timeoutTimer, &QTimer::timeout, reply, [this, reply]() {
         QString pendingUrl = m_pendingDownloads.value(reply);
         qWarning() << "Image download timed out:" << pendingUrl;
@@ -98,7 +126,11 @@ void ImageLoader::loadImage(const QString &url, const QString &systemName)
     connect(reply, QOverload<QNetworkReply::NetworkError>::of(&QNetworkReply::errorOccurred),
             this, &ImageLoader::handleNetworkError);
     
-    qDebug() << "Started downloading image:" << normalizedUrl;
+    if (retryCount > 0) {
+        qDebug() << "Started downloading image (retry" << retryCount << "of" << MAX_RETRIES << ", timeout:" << timeoutMs << "ms):" << normalizedUrl;
+    } else {
+        qDebug() << "Started downloading image (timeout:" << timeoutMs << "ms):" << normalizedUrl;
+    }
 }
 
 void ImageLoader::loadPresetImage(const QString &category)
@@ -271,23 +303,29 @@ void ImageLoader::handleImageDownloaded()
         if (!data.isEmpty()) {
             saveImageToCache(url, data);
             QString cachedPath = getCachedImagePath(url);
+            m_retryCount.remove(url); // Clean up successful download
             emit imageLoaded(url, cachedPath);
             qDebug() << "Image downloaded and cached:" << url;
         } else {
             emit imageLoadFailed(url, "Empty image data received");
         }
     } else {
-        // Retry once with a sanitized URL (strip query params) if extension missing
         QString err = reply->errorString();
         qDebug() << "Failed to download image:" << url << err;
+        
+        // Only try URL sanitization if we haven't exceeded retry limits
+        int currentRetries = m_retryCount.value(url, 0);
+        const int MAX_RETRIES = 7; // Updated to match main function
+        
         QUrl qurl(url);
         bool hasExt = QFileInfo(qurl.path()).suffix().length() > 0;
-        if (!hasExt) {
+        if (!hasExt && currentRetries < MAX_RETRIES) {
             QUrl retry = qurl;
             retry.setQuery(QString());
             QString retryUrl = retry.toString();
             if (retryUrl != url) {
                 qDebug() << "Retrying image without query params:" << retryUrl;
+                // Reset retry count for the new URL (it's a different URL now)
                 loadImage(retryUrl, QString());
             }
         }
@@ -305,19 +343,38 @@ void ImageLoader::handleNetworkError(QNetworkReply::NetworkError error)
     QString url = m_pendingDownloads.value(reply);
     qDebug() << "Network error downloading image:" << url << error;
 
-    // Retry once on transient errors
-    if (error == QNetworkReply::TimeoutError ||
-        error == QNetworkReply::TemporaryNetworkFailureError ||
-        error == QNetworkReply::ProxyTimeoutError ||
-        error == QNetworkReply::UnknownNetworkError) {
-        if (!url.isEmpty()) {
-            qDebug() << "Retrying image download after transient error:" << url;
+    // Check retry limits before retrying (FIXED: prevents infinite loops!)
+    const int MAX_RETRIES = 7; // Updated to match main function
+    int currentRetries = m_retryCount.value(url, 0);
+    
+    // Retry only on transient errors and within limits
+    if ((error == QNetworkReply::TimeoutError ||
+         error == QNetworkReply::TemporaryNetworkFailureError ||
+         error == QNetworkReply::ProxyTimeoutError ||
+         error == QNetworkReply::UnknownNetworkError) && 
+        currentRetries < MAX_RETRIES && 
+        !url.isEmpty()) {
+        
+        // Exponential backoff: wait longer before each retry (1s, 2s, 4s, 8s...)
+        int delayMs = 1000 * (1 << qMin(currentRetries, 6)); // Cap at 64 seconds
+        
+        qDebug() << "Retrying image download after transient error (attempt" << (currentRetries + 1) << "of" << MAX_RETRIES << ", delay:" << delayMs << "ms):" << url;
+        
+        // Delay the retry using QTimer::singleShot for exponential backoff
+        QTimer::singleShot(delayMs, this, [this, url]() {
             loadImage(url, QString());
-            reply->deleteLater();
-            return;
-        }
+        });
+        
+        reply->deleteLater();
+        return;
     }
 
+    // Max retries exceeded or permanent error
+    if (currentRetries >= MAX_RETRIES) {
+        qDebug() << "Image download failed permanently after" << MAX_RETRIES << "attempts:" << url;
+        m_retryCount.remove(url); // Clean up
+    }
+    
     emit imageLoadFailed(url, QString("Network error: %1").arg(error));
 }
 

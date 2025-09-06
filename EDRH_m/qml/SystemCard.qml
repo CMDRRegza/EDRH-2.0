@@ -18,6 +18,7 @@ Rectangle {
     border.color: "#333333"
     clip: true  // Prevent content from overflowing outside the card
     
+    
     // Extract data with safety checks
     readonly property string systemName: (systemData && typeof systemData === 'object' && systemData.name) ? systemData.name : "Unknown System"
     readonly property string category: (systemData && typeof systemData === 'object' && systemData.category) ? systemData.category : "Wolf-Rayet Star"
@@ -265,6 +266,11 @@ Rectangle {
     
     // Update the image source - separate function to avoid binding loops
     function updateImageSource() {
+        // CRITICAL FIX: Guard against function calls during component destruction
+        if (!root || root.parent === null) {
+            return; // Component is being destroyed, skip function call
+        }
+        
         // Recompute background image each call to avoid stale binding when
         // ImageLoader's internal preset map changes without a QML-notifiable property
         var bg = getBackgroundImage();
@@ -336,27 +342,34 @@ Rectangle {
                     styleColor: "#000000"
                     
                     MouseArea {
+                        id: systemNameMouseArea
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         hoverEnabled: true
                         
                         onEntered: {
-                            parent.color = "#FF7F50"
-                            parent.scale = 1.02
+                            // NO color change on hover - only scale up
+                            systemNameText.scale = 1.02       // Size up on hover ONLY
                         }
+                        
                         onExited: {
-                            parent.color = "#FFFFFF"
-                            parent.scale = 1.0
+                            systemNameText.color = "#FFFFFF"  // Exit makes it white
+                            systemNameText.scale = 1.0        // Scale back down on exit
                         }
-                        onClicked: root.systemNameCopyRequested(root.systemName)
+                        
+                        onClicked: {
+                            root.systemNameCopyRequested(root.systemName)
+                            systemNameText.color = "#FF7F50"  // Click makes it orange
+                        }
+                    }
+                    
+                    // Smooth animations
+                    Behavior on scale {
+                        NumberAnimation { duration: 120; easing.type: Easing.OutQuad }
                     }
                     
                     Behavior on color {
-                        ColorAnimation { duration: 200 }
-                    }
-                    
-                    Behavior on scale {
-                        NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                        ColorAnimation { duration: 150; easing.type: Easing.OutQuad }
                     }
                 }
                 
@@ -585,22 +598,22 @@ Rectangle {
         }
     }
     
-    // Card hover effect
+    // Card hover effect - FIXED: Remove scale conflicts with systemNameText
     MouseArea {
         anchors.fill: parent
-        hoverEnabled: true
+        hoverEnabled: false  // DISABLED: Testing if this interferes with text hover
         propagateComposedEvents: true
         
         onEntered: {
             root.border.color = "#FF7F50"
             root.border.width = 3
-            root.scale = 1.02
+            // REMOVED: root.scale = 1.02 to avoid conflict with systemNameText.scale
             hoverGlow.visible = true
         }
         onExited: {
             root.border.color = "#333333"
             root.border.width = 2
-            root.scale = 1.0
+            // REMOVED: root.scale = 1.0 to avoid conflict with systemNameText.scale
             hoverGlow.visible = false
         }
         
@@ -628,10 +641,7 @@ Rectangle {
         }
     }
     
-    // Smooth animations
-    Behavior on scale {
-        NumberAnimation { duration: 200; easing.type: Easing.OutQuad }
-    }
+    // Smooth animations - REMOVED: global scale behavior to avoid conflicts with systemNameText.scale
     
     Behavior on border.color {
         ColorAnimation { duration: 200 }

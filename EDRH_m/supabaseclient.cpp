@@ -3386,12 +3386,16 @@ void SupabaseClient::startImgbbUpload(const QString &filePath, const QString &sy
     qDebug() << "Using API key (first 10 chars):" << apiKey.left(10) + "...";
 
     // === THE CRITICAL FIX IS HERE ===
-    // Create the ImgBB request properly
+    // Create the ImgBB request properly with optimizations
     QUrl imgbbUrl("https://api.imgbb.com/1/upload");
     QNetworkRequest request(imgbbUrl);
-    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+    // OPTIMIZATION: Allow HTTP/2 for better performance
+    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-    request.setRawHeader("Connection", "close");
+    // OPTIMIZATION: Keep alive connections for faster subsequent uploads
+    request.setRawHeader("Connection", "keep-alive");
+    // OPTIMIZATION: Prefer cached responses
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
 
     // CRITICAL: Set the correct Content-Type for form data
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");

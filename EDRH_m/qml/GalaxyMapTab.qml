@@ -253,6 +253,7 @@ Rectangle {
                     "qrc:/assets/E47CDFX.png",
                     "assets/E47CDFX.png"
                 ]
+
                 property int currentSourceIndex: 0
                 
                 // Transform background with navigation like dots

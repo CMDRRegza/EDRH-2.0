@@ -56,6 +56,7 @@ private:
     QHash<QString, QString> m_imageCache;  // URL -> local file path
     QHash<QString, QString> m_presetImages; // Category -> preset URL
     QHash<QNetworkReply*, QString> m_pendingDownloads; // Reply -> URL
+    QHash<QString, int> m_retryCount; // URL -> retry attempts (prevent infinite loops)
     QString m_cacheDir;
     
     void initializeCache();
