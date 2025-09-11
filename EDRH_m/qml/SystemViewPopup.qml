@@ -39,6 +39,9 @@ ApplicationWindow {
     // Global debounce for updateSystemDisplay to prevent duplicates
     property bool updateSystemDisplayInProgress: false
     
+    // Debounce mechanism for image upload to prevent duplicates
+    property bool imageUploadInProgress: false
+    
     // Prevent infinite loop when trying to load category table data
     property bool categoryDataLoadingInProgress: false
     
@@ -54,6 +57,16 @@ ApplicationWindow {
         onTriggered: claimCheckCooldown = false
     }
     
+    // Image upload debounce timer
+    Timer {
+        id: imageUploadDebounceTimer
+        interval: 2000 // 2 second debounce for image upload
+        repeat: false
+        onTriggered: {
+            imageUploadInProgress = false
+        }
+    }
+    
     // Timer to close upload progress popup after all uploads complete
     Timer {
         id: uploadDelayTimer
@@ -65,6 +78,11 @@ ApplicationWindow {
             uploadPendingCount = 0
             uploadCompletedCount = 0
             uploadStartedCount = 0
+            
+            // Reset image upload debounce when upload operation completes
+            imageUploadInProgress = false
+            imageUploadDebounceTimer.stop()
+            
             console.log("Upload progress dialog closed after completion")
         }
     }
@@ -1126,6 +1144,10 @@ ApplicationWindow {
                     uploadProgressText.text = "Upload failed - no controller available"
                     uploadDelayTimer.interval = 2000
                     uploadDelayTimer.restart()
+                    
+                    // Reset image upload debounce on failure
+                    imageUploadInProgress = false
+                    imageUploadDebounceTimer.stop()
                     break
                 }
             }
@@ -1134,6 +1156,13 @@ ApplicationWindow {
             if (uploadStartedCount > 0) {
                 uploadProgressText.text = "Uploading " + uploadStartedCount + " image(s)... (This may take 1-2 minutes for large images)"
             }
+        }
+        
+        onRejected: {
+            // User cancelled upload - reset debounce immediately
+            console.log("Image upload cancelled by user")
+            imageUploadInProgress = false
+            imageUploadDebounceTimer.stop()
         }
     }
     
@@ -1496,6 +1525,10 @@ ApplicationWindow {
                     uploadProgressText.text = "✅ Upload successful! Refreshing display..."
                     uploadDelayTimer.interval = 1500
                     uploadDelayTimer.restart()
+                    
+                    // Reset image upload debounce on successful upload
+                    imageUploadInProgress = false
+                    imageUploadDebounceTimer.stop()
                     
                     // Stop timeout timer
                     if (uploadTimeoutTimer.running) {
@@ -3427,28 +3460,38 @@ ApplicationWindow {
                                     spacing: 15
 
                                     Button {
-                                        text: "Upload Images"
+                                        text: imageUploadInProgress ? "Uploading..." : "Upload Images"
                                         Layout.preferredWidth: 120
                                         Layout.preferredHeight: 35
-                                        enabled: isClaimedByUser
+                                        enabled: isClaimedByUser && !imageUploadInProgress
 
                                         background: Rectangle {
-                                            color: parent.pressed ? "#a855f7" : "#9333ea"
+                                            color: parent.enabled ? (parent.pressed ? "#a855f7" : "#9333ea") : "#555555"
                                             radius: 8
                                             border.width: 1
-                                            border.color: "#7c3aed"
+                                            border.color: parent.enabled ? "#7c3aed" : "#777777"
                                         }
 
                                         contentItem: Text {
                                             text: parent.text
                                             font.pixelSize: 12
                                             font.bold: true
-                                            color: "#FFFFFF"
+                                            color: parent.enabled ? "#FFFFFF" : "#AAAAAA"
                                             horizontalAlignment: Text.AlignHCenter
                                             verticalAlignment: Text.AlignVCenter
                                         }
 
                                         onClicked: {
+                                            // Debounce: prevent double-clicking
+                                            if (imageUploadInProgress) {
+                                                console.log("Image upload already in progress, ignoring click")
+                                                return
+                                            }
+                                            
+                                            // Set debounce flag and start timer
+                                            imageUploadInProgress = true
+                                            imageUploadDebounceTimer.start()
+                                            
                                             console.log("Opening image picker for system:", systemName)
                                             multiImageDialog.open()
                                         }

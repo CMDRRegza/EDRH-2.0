@@ -40,10 +40,18 @@ public:
     
     // Commander extraction - following v1.4incomplete.py pattern
     Q_INVOKABLE QString extractCommanderFromJournal(const QString &journalFilePath = "");
+    Q_INVOKABLE QStringList getAllDetectedCommanders() const;
+    Q_INVOKABLE void scanAllJournalsForCommanders();
+    Q_INVOKABLE void switchToCommander(const QString &commanderName);
+    
+    // Force commander management
+    void setForcedCommander(const QString &forcedCommander, bool enabled);
 
 signals:
     void commanderNameChanged();
     void commanderDetected(const QString &commanderName);
+    void allDetectedCommandersChanged();  // Signal when commander list updates
+    void newJournalSession(const QString &newCommander);  // Signal when new journal session starts with different commander
     void currentSystemChanged();
     void journalPathChanged();
     void isMonitoringChanged();
@@ -67,6 +75,14 @@ private:
     bool m_isMonitoring;
     qint64 m_lastFileSize;
     QJsonObject m_lastJumpData;
+    QStringList m_allDetectedCommanders;  // Track all commanders found across journals
+    
+    // Forced commander state for jump filtering
+    QString m_forcedCommanderName;
+    bool m_forcedCommanderEnabled;
+    
+    // Track the actual journal file owner (not the effective commander)
+    QString m_actualJournalCommander;
     
     // Helper methods
     void processJournalFile(const QString &filePath);

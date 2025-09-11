@@ -360,9 +360,10 @@ void GalaxyMapRenderer::drawUI(QPainter *painter)
         }
     }
     
-    QString status = QString("Zoom: %1x | Showing: %2 systems | 🟦 Unclaimed  🟢 Your Claims  🟠 Others  🟡 POIs")
+    QString status = QString("Zoom: %1x | Showing: %2 of %3 systems | 🟦 Unclaimed  🟢 Your Claims  🟠 Others  🟡 POIs")
                      .arg(m_zoomLevel, 0, 'f', 2)
-                     .arg(renderedStars);
+                     .arg(renderedStars)
+                     .arg(m_realStars.size());
     
     // Status with outline
     painter->setPen(QPen(QColor(0, 0, 0), 2));

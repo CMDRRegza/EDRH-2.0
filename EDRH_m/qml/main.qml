@@ -477,6 +477,343 @@ ApplicationWindow {
         }
     }
     
+    // Settings Dialog
+    Popup {
+        id: settingsDialog
+        parent: Overlay.overlay
+        x: (mainWindow.width - width) / 2
+        y: Math.max(50, (mainWindow.height - height) / 2 - 50)
+        width: 520
+        height: 450
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        z: 1000
+        
+        // Debounce mechanism for close button
+        property bool closeInProgress: false
+        
+        Timer {
+            id: closeDebounceTimer
+            interval: 1000 // 1 second debounce
+            repeat: false
+            onTriggered: {
+                settingsDialog.closeInProgress = false
+            }
+        }
+        
+        // Reset debounce when dialog opens/closes
+        onOpened: {
+            closeInProgress = false
+            closeDebounceTimer.stop()
+        }
+        
+        onClosed: {
+            closeInProgress = false
+            closeDebounceTimer.stop()
+        }
+        
+        background: Rectangle {
+            color: cardBgColor
+            radius: 15
+            border.width: 2
+            border.color: borderColor
+        }
+        
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 30
+            spacing: 20
+            
+            // Header
+            Text {
+                text: "Settings"
+                font.pixelSize: 24
+                font.bold: true
+                color: textColor
+                Layout.fillWidth: true
+            }
+            
+            // Settings content
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 25
+                
+                // Force Main CMDR Section
+                Text {
+                    text: "Commander Override"
+                    font.pixelSize: 16
+                    font.bold: true
+                    color: accentColor
+                }
+                
+                // Force Main CMDR Toggle
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 15
+                    
+                    Text {
+                        text: "Force Main CMDR"
+                        font.pixelSize: 14
+                        font.bold: true
+                        color: textColor
+                    }
+                    
+                    // Better question mark button (cleaner style)
+                    Rectangle {
+                        width: 20
+                        height: 20
+                        radius: 10
+                        color: helpMouseArea.pressed ? accentColor : (helpMouseArea.containsMouse ? secondaryBgColor : "transparent")
+                        border.color: textMuted
+                        border.width: 1
+                        
+                        Text {
+                            anchors.centerIn: parent
+                            text: "?"
+                            font.pixelSize: 12
+                            font.bold: true
+                            color: textMuted
+                        }
+                        
+                        MouseArea {
+                            id: helpMouseArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: helpTooltip.visible = !helpTooltip.visible
+                        }
+                        
+                        Behavior on color {
+                            ColorAnimation { duration: 150 }
+                        }
+                    }
+                    
+                    Item { Layout.fillWidth: true }
+                    
+                    // Custom sliding toggle
+                    Rectangle {
+                        id: toggleBackground
+                        width: 60
+                        height: 30
+                        radius: 15
+                        color: forceMainCmdrToggle.checked ? accentColor : secondaryBgColor
+                        border.color: borderColor
+                        border.width: 1
+                        
+                        property bool checked: false
+                        
+                        Rectangle {
+                            id: toggleHandle
+                            width: 24
+                            height: 24
+                            radius: 12
+                            color: "white"
+                            anchors.verticalCenter: parent.verticalCenter
+                            
+                            Behavior on x {
+                                NumberAnimation { duration: 200; easing.type: Easing.OutQuad }
+                            }
+                            
+                            x: forceMainCmdrToggle.checked ? parent.width - width - 3 : 3
+                        }
+                        
+                        MouseArea {
+                            id: forceMainCmdrToggle
+                            anchors.fill: parent
+                            property bool checked: false
+                            
+                            onClicked: {
+                                checked = !checked
+                                toggleBackground.checked = checked
+                            }
+                        }
+                        
+                        Behavior on color {
+                            ColorAnimation { duration: 200 }
+                        }
+                    }
+                }
+                
+                // Help tooltip
+                Rectangle {
+                    id: helpTooltip
+                    visible: false
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: descriptionText.height + 20
+                    color: secondaryBgColor
+                    border.color: borderColor
+                    border.width: 1
+                    radius: 8
+                    
+                    Text {
+                        id: descriptionText
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        text: "In case the program incorrectly tracks the wrong Main CMDR, this will force the main CMDR to be what you selected instead of what the program has tracked. This override is temporary for this session only."
+                        font.pixelSize: 12
+                        color: textMuted
+                        wrapMode: Text.WordWrap
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+                
+                // Commander Selection Frame
+                Text {
+                    text: "Select Commander"
+                    font.pixelSize: 14
+                    font.bold: true
+                    color: textColor
+                }
+                
+                Rectangle {
+                    id: cmdrSelectionFrame
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 100
+                    color: "#1f1f1f"
+                    radius: 8
+                    border.color: borderColor
+                    border.width: 1
+                    
+                    property string selectedCmdr: "Regza" // Shared selection state
+                    
+                    ScrollView {
+                        id: cmdrScrollView
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        clip: true
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOn
+                        ScrollBar.vertical.policy: ScrollBar.AlwaysOff
+                        
+                        // Custom wheel handler for horizontal scrolling (stolen from SystemViewPopup)
+                        WheelHandler {
+                            target: null
+                            onWheel: function(event) {
+                                // Convert vertical wheel to horizontal scroll
+                                var delta = event.angleDelta.y / 120 * 50 // 50 pixels per wheel notch
+                                cmdrScrollView.ScrollBar.horizontal.position -= delta / cmdrScrollView.contentWidth
+                                
+                                // Clamp to valid range
+                                if (cmdrScrollView.ScrollBar.horizontal.position < 0) {
+                                    cmdrScrollView.ScrollBar.horizontal.position = 0
+                                } else if (cmdrScrollView.ScrollBar.horizontal.position > 1 - cmdrScrollView.ScrollBar.horizontal.size) {
+                                    cmdrScrollView.ScrollBar.horizontal.position = 1 - cmdrScrollView.ScrollBar.horizontal.size
+                                }
+                            }
+                        }
+                        
+                        Row {
+                            id: cmdrRow
+                            spacing: 15
+                            height: 80
+                            
+                            // Real commander cards from journal monitoring
+                            Repeater {
+                                model: edrhController.allDetectedCommanders
+                                
+                                Rectangle {
+                                    width: 120
+                                    height: 80
+                                    color: cmdrMouseArea.pressed ? accentColor : (cmdrSelectionFrame.selectedCmdr === modelData ? accentColor : secondaryBgColor)
+                                    border.color: cmdrSelectionFrame.selectedCmdr === modelData ? accentColor : borderColor
+                                    border.width: cmdrSelectionFrame.selectedCmdr === modelData ? 2 : 1
+                                    radius: 8
+                                    
+                                    Column {
+                                        anchors.centerIn: parent
+                                        spacing: 5
+                                        
+                                        Text {
+                                            text: modelData
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                            color: textColor
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                        }
+                                        
+                                        Text {
+                                            text: cmdrSelectionFrame.selectedCmdr === modelData ? "Selected" : "Available"
+                                            font.pixelSize: 10
+                                            color: cmdrSelectionFrame.selectedCmdr === modelData ? "#000000" : textMuted
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                        }
+                                    }
+                                    
+                                    MouseArea {
+                                        id: cmdrMouseArea
+                                        anchors.fill: parent
+                                        onClicked: {
+                                            cmdrSelectionFrame.selectedCmdr = modelData
+                                            console.log("Selected CMDR:", modelData)
+                                        }
+                                    }
+                                    
+                                    Behavior on color {
+                                        ColorAnimation { duration: 200 }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Item { Layout.fillHeight: true }
+            }
+            
+            // Action buttons
+            RowLayout {
+                Layout.fillWidth: true
+                
+                Item { Layout.fillWidth: true }
+                
+                Button {
+                    text: settingsDialog.closeInProgress ? "Closing..." : "Close"
+                    Layout.preferredWidth: 80
+                    Layout.preferredHeight: 35
+                    enabled: !settingsDialog.closeInProgress
+                    
+                    background: Rectangle {
+                        color: parent.enabled ? (parent.pressed ? accentHover : accentColor) : "#555555"
+                        radius: 10
+                    }
+                    
+                    contentItem: Text {
+                        text: parent.text
+                        font.pixelSize: 13
+                        font.bold: true
+                        color: parent.enabled ? "#000000" : "#888888"
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    
+                    onClicked: {
+                        // Debounce: prevent double-clicking
+                        if (settingsDialog.closeInProgress) {
+                            console.log("Settings close already in progress, ignoring click")
+                            return
+                        }
+                        
+                        // Set debounce flag and start timer
+                        settingsDialog.closeInProgress = true
+                        closeDebounceTimer.start()
+                        
+                        console.log("Settings dialog closing - applying settings...")
+                        
+                        // Apply settings
+                        if (forceMainCmdrToggle.checked && cmdrSelectionFrame.selectedCmdr !== "") {
+                            console.log("Force Main CMDR enabled for this session:", cmdrSelectionFrame.selectedCmdr)
+                            edrhController.setForcedCommander(cmdrSelectionFrame.selectedCmdr)
+                        } else {
+                            console.log("Force Main CMDR disabled")
+                            edrhController.setForcedCommander("")  // Disable forced commander
+                        }
+                        settingsDialog.close()
+                    }
+                }
+            }
+        }
+    }
+    
     // Connect to controller signals
     Connections {
         target: edrhController
@@ -511,6 +848,18 @@ ApplicationWindow {
             galaxyMapWindow.show()
             galaxyMapWindow.raise()
             galaxyMapWindow.requestActivate()
+        }
+        
+        function onShowSettingsDialog() {
+            settingsDialog.open()
+        }
+        
+        function onAllDetectedCommandersChanged() {
+            // Force update of commander list in settings dialog
+            if (settingsDialog.opened) {
+                // The Repeater model will automatically update due to property binding
+                console.log("Commander list updated, new count:", edrhController.allDetectedCommanders.length)
+            }
         }
         
         function onDatabaseDownloadProgress(progress, status) {

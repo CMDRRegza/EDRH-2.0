@@ -41,7 +41,7 @@ Rectangle {
             Button {
                 id: viewSystemBtn
                 text: "View System"
-                Layout.preferredWidth: 145
+                Layout.preferredWidth: 115  // Reduced to make room for settings button
                 Layout.preferredHeight: 40
                 enabled: false
                 
@@ -63,7 +63,30 @@ Rectangle {
                 // Temporarily disabled
             }
             
-            // Temporarily remove POI action
+            Button {
+                id: settingsBtn
+                text: "Settings"
+                Layout.preferredWidth: 115
+                Layout.preferredHeight: 40
+                
+                background: Rectangle {
+                    color: parent.pressed ? Theme.tertiaryBgColor : Theme.secondaryBgColor
+                    border.color: Theme.borderColor
+                    border.width: 1
+                    radius: 10
+                }
+                
+                contentItem: Text {
+                    text: parent.text
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: Theme.textColor
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                
+                onClicked: edrhController.requestSettingsDialog()
+            }
         }
     }
 } 

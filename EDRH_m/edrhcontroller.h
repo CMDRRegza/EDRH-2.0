@@ -54,6 +54,7 @@ class EDRHController : public QObject
     Q_PROPERTY(QVariantList allCommanderLocations READ allCommanderLocations NOTIFY allCommanderLocationsChanged)
     Q_PROPERTY(double commanderX READ commanderX NOTIFY commanderPositionChanged)
     Q_PROPERTY(double commanderZ READ commanderZ NOTIFY commanderPositionChanged)
+    Q_PROPERTY(QStringList allDetectedCommanders READ getAllDetectedCommanders NOTIFY allDetectedCommandersChanged)
     
 public:
     explicit EDRHController(QObject *parent = nullptr);
@@ -112,6 +113,11 @@ public slots:
     void claimSystem(const QString &systemName);
     void viewSystem(const QString &systemName);
     void viewYourSystems();
+    void requestSettingsDialog();
+    void setForcedCommander(const QString &commander);
+    
+    // Commander list access
+    Q_INVOKABLE QStringList getAllDetectedCommanders() const;
 
     void copyToClipboard(const QString &text);
     void showAdminPanel();
@@ -202,6 +208,8 @@ signals:
     // Action signals
     void showMessage(const QString &title, const QString &message);
     void showError(const QString &title, const QString &message);
+    void showSettingsDialog();
+    void allDetectedCommandersChanged();
     void navigationRequested(const QString &systemName);
     void systemUpdated();
     void showSystemPopup(const QString &systemName, const QVariantMap &systemData);
@@ -320,6 +328,10 @@ private:
     QVariantList m_allCommanderLocations;
     bool m_galaxyMapLoading;
     QVariantMap m_galaxyMapFilters;
+    
+    // Forced commander settings
+    bool m_forcedCommanderEnabled;
+    QString m_forcedCommanderName;
 };
 
 #endif // EDRHCONTROLLER_H 

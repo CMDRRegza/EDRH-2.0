@@ -50,6 +50,8 @@ EDRHController::EDRHController(QObject *parent)
     , m_sessionStartTime(QDateTime::currentMSecsSinceEpoch())
     , m_unclaimedIndex(0)
     , m_suppressMainAppNotifications(false)
+    , m_forcedCommanderEnabled(false)
+    , m_forcedCommanderName("")
 
 {
     // Initialize galaxy map data
@@ -275,10 +277,47 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
                         m_supabaseClient->triggerWebhook("program_login", webhookData);
                     }
                 });
-        connect(m_journalMonitor, &JournalMonitor::commanderNameChanged,
+                connect(m_journalMonitor, &JournalMonitor::commanderNameChanged,
                 this, [this]() {
                     if (m_journalMonitor) {
                         setCommanderName(m_journalMonitor->commanderName());
+                    }
+                });
+                connect(m_journalMonitor, &JournalMonitor::allDetectedCommandersChanged,
+                this, &EDRHController::allDetectedCommandersChanged);
+                connect(m_journalMonitor, &JournalMonitor::newJournalSession,
+                this, [this](const QString &newCommander) {
+                    // JOURNAL = CMDR RULE: New journal session overrides Force Main CMDR
+                    if (m_forcedCommanderEnabled && !m_forcedCommanderName.isEmpty()) {
+                        if (newCommander != m_forcedCommanderName) {
+                            qDebug() << "New journal session detected with commander" << newCommander 
+                                     << "- overriding Force Main CMDR setting (" << m_forcedCommanderName << ")";
+                            
+                            QString previousForcedCommander = m_forcedCommanderName;
+                            
+                            // Disable Force Main CMDR and switch to the new journal commander
+                            m_forcedCommanderEnabled = false;
+                            m_forcedCommanderName = "";
+                            
+                            // Update SupabaseClient commander context immediately
+                            if (m_supabaseClient && !newCommander.isEmpty() && newCommander != "Unknown") {
+                                m_supabaseClient->setCommanderContext(newCommander);
+                                qDebug() << "Updated SupabaseClient context from" << previousForcedCommander << "to" << newCommander;
+                            }
+                            
+                            // Re-initialize ClaimManager with new commander
+                            if (m_claimManager && m_supabaseClient && !newCommander.isEmpty() && newCommander != "Unknown") {
+                                m_claimManager->initialize(m_supabaseClient, newCommander);
+                                qDebug() << "Re-initialized ClaimManager for new session commander:" << newCommander;
+                            }
+                            
+                            // Force refresh of nearest systems with new commander's position
+                            if (m_hasValidPosition) {
+                                qDebug() << "Forcing nearest systems refresh for new journal session";
+                                updateNearestSystems();
+                                updateUnclaimedSystems();
+                            }
+                        }
                     }
                 });
         connect(m_journalMonitor, &JournalMonitor::currentSystemChanged,
@@ -307,15 +346,20 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
                             
                                                 // **CRITICAL FIX**: Get fresh data from database with updated commander position
                     // instead of just recalculating existing data to prevent coordinate mismatch
-                    if (m_sessionJumpTrackingActive) {
+                    
+                    // COMMANDER SWITCH FIX: Always update distances during commander switching or when session tracking is active
+                    bool isCommanderSwitch = !m_forcedCommanderName.isEmpty(); // Manual commander override
+                    if (m_sessionJumpTrackingActive || isCommanderSwitch) {
                         if (!wasValidBefore) {
                             qDebug() << "First valid position detected, fetching fresh systems with updated distance calculations";
+                        } else if (isCommanderSwitch) {
+                            qDebug() << "Commander switch detected - updating distances from new position:" << m_commanderX << m_commanderY << m_commanderZ;
                         } else {
                             qDebug() << "Position updated from FSD jump, fetching fresh systems with updated distance calculations";
                         }
                         // Use updateNearestSystems to get fresh data with correct distances from new position
                         updateNearestSystems();
-                    } else if (!m_sessionJumpTrackingActive) {
+                    } else {
                         qDebug() << "Skipping distance recalculation during journal initialization";
                     }
                         }
@@ -358,11 +402,18 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
                             
                             // **PERFORMANCE FIX**: Only recalculate if we have session tracking active
                             // During journal initialization, we get many historical jumps that spam the database
-                            if (m_sessionJumpTrackingActive) {
-                                qDebug() << "Position updated from carrier jump, fetching fresh systems with updated distance calculations";
+                            
+                            // COMMANDER SWITCH FIX: Always update distances during commander switching or when session tracking is active
+                            bool isCommanderSwitch = !m_forcedCommanderName.isEmpty(); // Manual commander override
+                            if (m_sessionJumpTrackingActive || isCommanderSwitch) {
+                                if (isCommanderSwitch) {
+                                    qDebug() << "Commander switch detected - updating distances from carrier position:" << m_commanderX << m_commanderY << m_commanderZ;
+                                } else {
+                                    qDebug() << "Position updated from carrier jump, fetching fresh systems with updated distance calculations";
+                                }
                                 // Use updateNearestSystems to get fresh data with correct distances from new position
                                 updateNearestSystems();
-                            } else if (!m_sessionJumpTrackingActive) {
+                            } else {
                                 qDebug() << "Skipping distance recalculation during journal initialization";
                             }
                         }
@@ -446,14 +497,28 @@ bool EDRHController::isAdmin() const
 
 void EDRHController::setCommanderName(const QString &name)
 {
-    if (m_commanderName != name) {
-        m_commanderName = name;
+    QString actualCommander = name;
+    
+    // Override with forced commander if enabled
+    if (m_forcedCommanderEnabled && !m_forcedCommanderName.isEmpty()) {
+        actualCommander = m_forcedCommanderName;
+        qDebug() << "Using forced commander:" << actualCommander << "(detected:" << name << ")";
+    }
+    
+    if (m_commanderName != actualCommander) {
+        m_commanderName = actualCommander;
         emit commanderNameChanged();
         
+        // Update SupabaseClient commander context for all database operations
+        if (m_supabaseClient && !actualCommander.isEmpty() && actualCommander != "Unknown") {
+            m_supabaseClient->setCommanderContext(actualCommander);
+            qDebug() << "SupabaseClient commander context updated to:" << actualCommander;
+        }
+        
         // Re-initialize ClaimManager with new commander
-        if (m_claimManager && m_supabaseClient && !name.isEmpty() && name != "Unknown") {
-            m_claimManager->initialize(m_supabaseClient, name);
-            qDebug() << "ClaimManager re-initialized for commander:" << name;
+        if (m_claimManager && m_supabaseClient && !actualCommander.isEmpty() && actualCommander != "Unknown") {
+            m_claimManager->initialize(m_supabaseClient, actualCommander);
+            qDebug() << "ClaimManager re-initialized for commander:" << actualCommander;
         }
     }
 }
@@ -466,12 +531,22 @@ void EDRHController::setCurrentSystem(const QString &system)
         
         // **PERFORMANCE FIX**: Only update systems if we have a valid position and session tracking is active
         // During journal initialization, this gets called many times unnecessarily
-        if (m_hasValidPosition && m_sessionJumpTrackingActive) {
+        
+        // COMMANDER SWITCH FIX: Always update systems during commander switching if we have valid position
+        bool isCommanderSwitch = !m_forcedCommanderName.isEmpty(); // Manual commander override
+        if (m_hasValidPosition && (m_sessionJumpTrackingActive || isCommanderSwitch)) {
+            if (isCommanderSwitch) {
+                qDebug() << "Commander switch detected - updating systems for new current system:" << system;
+            }
             // Update nearest systems when current system changes
             updateNearestSystems();
             updateUnclaimedSystems();
         } else {
-            qDebug() << "Skipping system update - position not valid or session tracking not active";
+            if (!m_hasValidPosition) {
+                qDebug() << "Skipping system update - position not valid";
+            } else {
+                qDebug() << "Skipping system update - session tracking not active and not a commander switch";
+            }
         }
     }
 }
@@ -597,6 +672,53 @@ void EDRHController::openGalaxyMap()
     emit openGalaxyMapWindow();
     
     // Removed annoying popup message
+}
+
+void EDRHController::requestSettingsDialog()
+{
+    qDebug() << "Opening settings dialog...";
+    
+    // Emit signal to open the settings dialog
+    emit showSettingsDialog();
+}
+
+void EDRHController::setForcedCommander(const QString &commander)
+{
+    if (!commander.isEmpty()) {
+        m_forcedCommanderEnabled = true;
+        m_forcedCommanderName = commander;
+        qDebug() << "Force Main CMDR enabled for this session:" << commander;
+        
+        // Set forced commander in JournalMonitor for jump filtering
+        if (m_journalMonitor) {
+            m_journalMonitor->setForcedCommander(commander, true);
+            qDebug() << "Switching journal monitoring to commander:" << commander;
+            m_journalMonitor->switchToCommander(commander);
+        }
+    } else {
+        m_forcedCommanderEnabled = false;
+        m_forcedCommanderName = "";
+        qDebug() << "Force Main CMDR disabled";
+        
+        // Disable forced commander in JournalMonitor
+        if (m_journalMonitor) {
+            m_journalMonitor->setForcedCommander("", false);
+            qDebug() << "Switching back to natural commander detection";
+            // Get the current commander that would be detected naturally (from latest journal)
+            QString naturalCommander = m_journalMonitor->extractCommanderFromJournal();
+            if (!naturalCommander.isEmpty() && naturalCommander != "Unknown") {
+                m_journalMonitor->switchToCommander(naturalCommander);
+            }
+        }
+    }
+}
+
+QStringList EDRHController::getAllDetectedCommanders() const
+{
+    if (m_journalMonitor) {
+        return m_journalMonitor->getAllDetectedCommanders();
+    }
+    return QStringList();
 }
 
 void EDRHController::viewSystem(const QString &systemName)

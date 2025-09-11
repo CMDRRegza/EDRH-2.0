@@ -14,6 +14,7 @@ JournalMonitor::JournalMonitor(QObject *parent)
     , m_updateTimer(new QTimer(this))
     , m_isMonitoring(false)
     , m_lastFileSize(0)
+    , m_forcedCommanderEnabled(false)
 {
     // Set up timer for periodic checks
     m_updateTimer->setInterval(1000); // Check every second
@@ -74,6 +75,9 @@ void JournalMonitor::startMonitoring()
             m_fileWatcher->addPath(m_currentJournalFile);
         }
     }
+    
+    // Scan all journals for commanders at startup
+    scanAllJournalsForCommanders();
     
     m_isMonitoring = true;
     m_updateTimer->start();
@@ -236,11 +240,38 @@ void JournalMonitor::processJournalLine(const QString &line)
 void JournalMonitor::extractCommanderName(const QJsonObject &entry)
 {
     QString commander = entry.value("Name").toString();
-    if (!commander.isEmpty() && commander != m_commanderName) {
-        m_commanderName = commander;
-        emit commanderNameChanged();
-        emit commanderDetected(commander);
-        qDebug() << "Commander detected:" << commander;
+    if (commander.isEmpty()) {
+        // Try LoadGame event format
+        commander = entry.value("Commander").toString();
+    }
+    
+    if (!commander.isEmpty()) {
+        // Track the actual journal owner (before any forced commander override)
+        m_actualJournalCommander = commander;
+        
+        // Add to all detected commanders list if not already present
+        if (!m_allDetectedCommanders.contains(commander)) {
+            m_allDetectedCommanders.append(commander);
+            emit allDetectedCommandersChanged();
+            qDebug() << "New commander added to list:" << commander;
+        }
+        
+        // Update current commander if different
+        if (commander != m_commanderName) {
+            QString previousCommander = m_commanderName;
+            m_commanderName = commander;
+            emit commanderNameChanged();
+            emit commanderDetected(commander);
+            
+            // JOURNAL = CMDR RULE: If this is a new journal session (different commander), 
+            // signal that Force Main CMDR should be overridden
+            if (!previousCommander.isEmpty() && commander != previousCommander) {
+                qDebug() << "New journal session detected: commander changed from" << previousCommander << "to" << commander;
+                emit newJournalSession(commander);
+            } else {
+                qDebug() << "Commander detected:" << commander;
+            }
+        }
     }
 }
 
@@ -248,6 +279,16 @@ void JournalMonitor::processFSDJump(const QJsonObject &entry)
 {
     QString system = entry.value("StarSystem").toString();
     if (!system.isEmpty() && system != m_currentSystem) {
+        // JOURNAL = CMDR RULE: If Force Main CMDR is active, ignore jumps from other commanders
+        if (m_forcedCommanderEnabled && !m_forcedCommanderName.isEmpty()) {
+            QString journalCommander = m_actualJournalCommander; // The actual commander from this journal file
+            if (journalCommander != m_forcedCommanderName) {
+                qDebug() << "Ignoring FSD jump to" << system << "from journal commander" << journalCommander 
+                         << "(Force Main CMDR is set to" << m_forcedCommanderName << ")";
+                return; // Skip this jump
+            }
+        }
+        
         m_currentSystem = system;
         m_lastJumpData = entry;
         emit currentSystemChanged();
@@ -260,6 +301,16 @@ void JournalMonitor::processCarrierJump(const QJsonObject &entry)
 {
     QString system = entry.value("StarSystem").toString();
     if (!system.isEmpty() && system != m_currentSystem) {
+        // JOURNAL = CMDR RULE: If Force Main CMDR is active, ignore jumps from other commanders
+        if (m_forcedCommanderEnabled && !m_forcedCommanderName.isEmpty()) {
+            QString journalCommander = m_actualJournalCommander; // The actual commander from this journal file
+            if (journalCommander != m_forcedCommanderName) {
+                qDebug() << "Ignoring Carrier jump to" << system << "from journal commander" << journalCommander 
+                         << "(Force Main CMDR is set to" << m_forcedCommanderName << ")";
+                return; // Skip this jump
+            }
+        }
+        
         m_currentSystem = system;
         m_lastJumpData = entry;
         emit currentSystemChanged();
@@ -296,6 +347,13 @@ void JournalMonitor::updateCurrentJournalFile()
         
         m_currentJournalFile = latestJournal;
         m_lastFileSize = 0; // Reset to process entire file
+        
+        // Extract commander from new journal file to track actual journal owner
+        QString newJournalCommander = extractCommanderFromJournal(m_currentJournalFile);
+        if (!newJournalCommander.isEmpty()) {
+            m_actualJournalCommander = newJournalCommander;
+            qDebug() << "New journal file belongs to commander:" << newJournalCommander;
+        }
         
         // Start watching new file
         m_fileWatcher->addPath(m_currentJournalFile);
@@ -593,4 +651,246 @@ QString JournalMonitor::extractCommanderFromJournal(const QString &journalFilePa
     
     qDebug() << "[WARNING] No commander found in any recent journals";
     return "Unknown";
+}
+
+QStringList JournalMonitor::getAllDetectedCommanders() const
+{
+    return m_allDetectedCommanders;
+}
+
+void JournalMonitor::scanAllJournalsForCommanders()
+{
+    if (m_journalPath.isEmpty()) {
+        qDebug() << "No journal path set for commander scanning";
+        return;
+    }
+    
+    qDebug() << "Scanning all journals for commanders...";
+    
+    QStringList allJournals = findJournalFiles(m_journalPath);
+    int commandersFound = 0;
+    
+    // Check ALL journals for commander events
+    for (const QString &journalPath : allJournals) {
+        QString journalName = QFileInfo(journalPath).fileName();
+        
+        QFile file(journalPath);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+        
+        QTextStream stream(&file);
+        QStringList lines;
+        while (!stream.atEnd()) {
+            lines.append(stream.readLine());
+        }
+        file.close();
+        
+        // Read from bottom to top (latest entries first) for efficiency
+        for (int i = lines.size() - 1; i >= 0; i--) {
+            QString line = lines[i].trimmed();
+            if (line.isEmpty()) continue;
+            
+            // Look for Commander or LoadGame events
+            if (line.contains("\"event\":\"LoadGame\"") || line.contains("\"event\":\"Commander\"")) {
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8(), &parseError);
+                
+                if (parseError.error == QJsonParseError::NoError) {
+                    QJsonObject data = doc.object();
+                    QString commander;
+                    
+                    if (data.value("event").toString() == "LoadGame") {
+                        commander = data.value("Commander").toString();
+                    } else if (data.value("event").toString() == "Commander") {
+                        commander = data.value("Name").toString();
+                    }
+                    
+                    if (!commander.isEmpty() && !m_allDetectedCommanders.contains(commander)) {
+                        m_allDetectedCommanders.append(commander);
+                        commandersFound++;
+                        qDebug() << "Found commander:" << commander << "in" << journalName;
+                    }
+                }
+            }
+        }
+    }
+    
+    if (commandersFound > 0) {
+        emit allDetectedCommandersChanged();
+        qDebug() << "Commander scan complete. Found" << commandersFound << "new commanders. Total:" << m_allDetectedCommanders.size();
+    } else {
+        qDebug() << "Commander scan complete. No new commanders found.";
+    }
+}
+
+void JournalMonitor::switchToCommander(const QString &commanderName)
+{
+    if (commanderName.isEmpty() || m_journalPath.isEmpty()) {
+        qDebug() << "Cannot switch commander - invalid name or journal path";
+        return;
+    }
+    
+    qDebug() << "[DEBUG] Switching to commander:" << commanderName;
+    qDebug() << "[DEBUG] Re-scanning all journals for commander's latest location...";
+    
+    QDir journalDir(m_journalPath);
+    if (!journalDir.exists()) {
+        qDebug() << "Journal directory does not exist:" << m_journalPath;
+        return;
+    }
+    
+    // Get all journal files sorted by modification time (newest first)
+    QStringList filters;
+    filters << "Journal.*.log";
+    QFileInfoList journalFiles = journalDir.entryInfoList(filters, QDir::Files | QDir::Readable, QDir::Time);
+    std::reverse(journalFiles.begin(), journalFiles.end()); // Newest first
+    
+    QString latestSystem;
+    QJsonObject latestJumpData;
+    QDateTime latestTimestamp;
+    
+    // Scan all journal files to find those belonging to the target commander
+    for (const QFileInfo &fileInfo : journalFiles) {
+        QFile file(fileInfo.absoluteFilePath());
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+        
+        qDebug() << "[DEBUG] Scanning journal:" << fileInfo.baseName();
+        
+        QTextStream stream(&file);
+        QString journalCommander;
+        bool isOdyssey = false;
+        
+        // Read the first few lines to identify the journal owner
+        QString line;
+        int lineCount = 0;
+        while (stream.readLineInto(&line) && lineCount < 10) { // Check first 10 lines for commander
+            lineCount++;
+            line = line.trimmed();
+            if (line.isEmpty()) continue;
+            
+            QJsonParseError parseError;
+            QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8(), &parseError);
+            if (parseError.error != QJsonParseError::NoError) {
+                continue;
+            }
+            
+            QJsonObject entry = doc.object();
+            QString event = entry.value("event").toString();
+            
+            // Check Fileheader for Odyssey status
+            if (event == "Fileheader") {
+                isOdyssey = entry.value("Odyssey").toBool();
+                qDebug() << "[DEBUG] Journal" << fileInfo.baseName() << "Odyssey:" << isOdyssey;
+            }
+            
+            // The first Commander event determines who owns this entire journal
+            if (event == "Commander") {
+                journalCommander = entry.value("Name").toString();
+                qDebug() << "[DEBUG] Journal" << fileInfo.baseName() << "belongs to commander:" << journalCommander;
+                break; // Found the journal owner, no need to read more
+            } else if (event == "LoadGame") {
+                journalCommander = entry.value("Commander").toString();
+                qDebug() << "[DEBUG] Journal" << fileInfo.baseName() << "belongs to commander (LoadGame):" << journalCommander;
+                break; // Found the journal owner, no need to read more
+            }
+        }
+        
+        // If this journal doesn't belong to our target commander, skip it
+        if (journalCommander != commanderName) {
+            file.close();
+            continue;
+        }
+        
+        qDebug() << "[DEBUG] Found journal for" << commanderName << ":" << fileInfo.baseName() << "(Odyssey:" << isOdyssey << ")";
+        
+        // This journal belongs to our target commander, scan for latest location
+        QString latestSystemInFile;
+        QJsonObject latestJumpInFile;
+        QDateTime latestEventTimeInFile;
+        
+        // Reset stream to beginning to scan all events
+        stream.seek(0);
+        while (stream.readLineInto(&line)) {
+            line = line.trimmed();
+            if (line.isEmpty()) continue;
+            
+            QJsonParseError parseError;
+            QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8(), &parseError);
+            if (parseError.error != QJsonParseError::NoError) {
+                continue;
+            }
+            
+            QJsonObject entry = doc.object();
+            QString event = entry.value("event").toString();
+            
+            // Track location events (FSDJump, CarrierJump, Location)
+            if (event == "FSDJump" || event == "CarrierJump" || event == "Location") {
+                QString system = entry.value("StarSystem").toString();
+                QDateTime eventTime = QDateTime::fromString(entry.value("timestamp").toString(), Qt::ISODate);
+                
+                if (!system.isEmpty() && (latestEventTimeInFile.isNull() || eventTime > latestEventTimeInFile)) {
+                    latestSystemInFile = system;
+                    latestJumpInFile = entry;
+                    latestEventTimeInFile = eventTime;
+                    qDebug() << "[DEBUG] Found location event for" << commanderName << ":" << system << "at" << eventTime.toString();
+                }
+            }
+        }
+        
+        file.close();
+        
+        // Check if this journal has the most recent location across all journals
+        if (!latestSystemInFile.isEmpty() && (latestTimestamp.isNull() || latestEventTimeInFile > latestTimestamp)) {
+            latestSystem = latestSystemInFile;
+            latestJumpData = latestJumpInFile;
+            latestTimestamp = latestEventTimeInFile;
+            qDebug() << "[DEBUG] Most recent location for" << commanderName << ":" << latestSystem << "from" << fileInfo.baseName() << "at" << latestEventTimeInFile.toString();
+        }
+    }
+    
+    if (!latestSystem.isEmpty()) {
+        qDebug() << "[DEBUG] Found last known location for" << commanderName << ":" << latestSystem;
+        
+        // Update commander identity and system location
+        m_commanderName = commanderName;
+        m_currentSystem = latestSystem;
+        m_lastJumpData = latestJumpData;
+        
+        qDebug() << "[DEBUG] Updated current system to" << latestSystem << "for commander" << commanderName;
+        emit currentSystemChanged();
+        
+        // If we have jump data with coordinates, emit an FSD jump to update position
+        if (latestJumpData.contains("StarPos")) {
+            emit fsdJumpDetected(latestSystem, latestJumpData);
+        }
+        
+        // Always emit commander change signals
+        emit commanderNameChanged();
+        emit commanderDetected(commanderName);
+        
+        qDebug() << "[DEBUG] Successfully switched to commander" << commanderName << "(current system:" << m_currentSystem << ")";
+    } else {
+        qDebug() << "[DEBUG] Could not find any location data for commander" << commanderName;
+        
+        // Still update commander name even if we can't find location data
+        m_commanderName = commanderName;
+        emit commanderNameChanged();
+        emit commanderDetected(commanderName);
+        qDebug() << "[DEBUG] Updated commander identity only (no location data found)";
+    }
+}
+
+void JournalMonitor::setForcedCommander(const QString &forcedCommander, bool enabled)
+{
+    m_forcedCommanderName = forcedCommander;
+    m_forcedCommanderEnabled = enabled;
+    
+    if (enabled && !forcedCommander.isEmpty()) {
+        qDebug() << "[DEBUG] JournalMonitor: Force commander set to" << forcedCommander;
+    } else {
+        qDebug() << "[DEBUG] JournalMonitor: Force commander disabled";
+    }
 } 
