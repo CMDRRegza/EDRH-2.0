@@ -122,7 +122,7 @@ bool JournalMonitor::analyzeJournalFolder(const QString &folderPath)
 
 QString JournalMonitor::autoDetectJournalFolder()
 {
-    // Try standard Elite Dangerous locations
+    // Try standard Elite Dangerous locations first
     QStringList possiblePaths = {
         QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + 
             "/Frontier Developments/Elite Dangerous",
@@ -137,7 +137,35 @@ QString JournalMonitor::autoDetectJournalFolder()
         }
     }
     
-    qDebug() << "Failed to auto-detect journal folder";
+    // SMART DETECTION: If standard paths fail, search for ANY folder containing journal files
+    qDebug() << "Standard Elite Dangerous paths not found, searching for journal files...";
+    
+    QStringList searchRoots = {
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/Frontier Developments",
+        QDir::homePath() + "/Saved Games/Frontier Developments",
+        "C:/Users/" + qgetenv("USERNAME") + "/Saved Games/Frontier Developments"
+    };
+    
+    for (const QString &rootPath : searchRoots) {
+        QDir rootDir(rootPath);
+        if (!rootDir.exists()) continue;
+        
+        qDebug() << "Searching for journal files in:" << rootPath;
+        
+        // Get all subdirectories
+        QStringList subDirs = rootDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString &subDir : subDirs) {
+            QString fullPath = rootDir.absoluteFilePath(subDir);
+            qDebug() << "Checking folder:" << fullPath;
+            
+            if (analyzeJournalFolder(fullPath)) {
+                qDebug() << "Found journal files in non-standard location:" << fullPath;
+                return fullPath;
+            }
+        }
+    }
+    
+    qDebug() << "Failed to auto-detect journal folder in standard or custom locations";
     return QString();
 }
 
@@ -733,6 +761,7 @@ void JournalMonitor::switchToCommander(const QString &commanderName)
     
     qDebug() << "[DEBUG] Switching to commander:" << commanderName;
     qDebug() << "[DEBUG] Re-scanning all journals for commander's latest location...";
+    qDebug() << "FORCE CMDR LOCATION DEBUG: Looking for" << commanderName << "in journal path:" << m_journalPath;
     
     QDir journalDir(m_journalPath);
     if (!journalDir.exists()) {
@@ -800,11 +829,13 @@ void JournalMonitor::switchToCommander(const QString &commanderName)
         
         // If this journal doesn't belong to our target commander, skip it
         if (journalCommander != commanderName) {
+            qDebug() << "FORCE CMDR LOCATION DEBUG: Skipping journal" << fileInfo.baseName() << "- belongs to" << journalCommander << "not" << commanderName;
             file.close();
             continue;
         }
         
         qDebug() << "[DEBUG] Found journal for" << commanderName << ":" << fileInfo.baseName() << "(Odyssey:" << isOdyssey << ")";
+        qDebug() << "FORCE CMDR LOCATION DEBUG: Processing journal" << fileInfo.baseName() << "for" << commanderName;
         
         // This journal belongs to our target commander, scan for latest location
         QString latestSystemInFile;
@@ -853,6 +884,7 @@ void JournalMonitor::switchToCommander(const QString &commanderName)
     
     if (!latestSystem.isEmpty()) {
         qDebug() << "[DEBUG] Found last known location for" << commanderName << ":" << latestSystem;
+        qDebug() << "FORCE CMDR LOCATION DEBUG: Updating from" << m_currentSystem << "to" << latestSystem << "for forced commander" << commanderName;
         
         // Update commander identity and system location
         m_commanderName = commanderName;
@@ -860,11 +892,33 @@ void JournalMonitor::switchToCommander(const QString &commanderName)
         m_lastJumpData = latestJumpData;
         
         qDebug() << "[DEBUG] Updated current system to" << latestSystem << "for commander" << commanderName;
+        qDebug() << "FORCE CMDR LOCATION DEBUG: Commander identity and system location updated successfully";
         emit currentSystemChanged();
         
-        // If we have jump data with coordinates, emit an FSD jump to update position
+        // If we have jump data with coordinates, emit position update WITHOUT triggering jump counter
+        // Use a special signal or direct position update to avoid fake jump counts
         if (latestJumpData.contains("StarPos")) {
-            emit fsdJumpDetected(latestSystem, latestJumpData);
+            // DON'T emit fsdJumpDetected during commander switches - it causes fake jump counts
+            // Instead, emit a position update signal that doesn't trigger jump counting
+            qDebug() << "[DEBUG] Commander switch position update (not counting as jump):" << latestSystem;
+            qDebug() << "FORCE CMDR LOCATION DEBUG: Position data available, updating coordinates";
+            
+            // CRITICAL FIX: Extract and emit position coordinates directly to update distance calculations
+            QJsonArray starPosArray = latestJumpData.value("StarPos").toArray();
+            if (starPosArray.size() >= 3) {
+                double newX = starPosArray[0].toDouble();
+                double newY = starPosArray[1].toDouble(); 
+                double newZ = starPosArray[2].toDouble();
+                qDebug() << "FORCE CMDR LOCATION DEBUG: Extracted coordinates:" << newX << newY << newZ;
+                
+                // Emit position update without jump count
+                emit positionUpdate(latestSystem, newX, newY, newZ);
+                qDebug() << "FORCE CMDR LOCATION DEBUG: Position update emitted for forced commander location";
+            } else {
+                qDebug() << "FORCE CMDR LOCATION DEBUG: Invalid StarPos array in jump data";
+            }
+        } else {
+            qDebug() << "FORCE CMDR LOCATION DEBUG: No position data found in latest jump data";
         }
         
         // Always emit commander change signals

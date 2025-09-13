@@ -320,6 +320,30 @@ void EDRHController::setJournalMonitor(JournalMonitor *monitor)
                         }
                     }
                 });
+                connect(m_journalMonitor, &JournalMonitor::positionUpdate,
+                this, [this](const QString &system, double x, double y, double z) {
+                    qDebug() << "FORCE CMDR POSITION FIX: Received position update for" << system << "at" << x << y << z;
+                    
+                    // Update position coordinates directly (bypassing jump detection)
+                    m_commanderX = x;
+                    m_commanderY = y;
+                    m_commanderZ = z;
+                    m_hasValidPosition = true;
+                    
+                    qDebug() << "FORCE CMDR POSITION FIX: Updated commander position coordinates to" << m_commanderX << m_commanderY << m_commanderZ;
+                    
+                    // Update commander location in database
+                    if (m_supabaseClient) {
+                        m_supabaseClient->updateCommanderLocation(m_commanderName, m_commanderX, m_commanderY, m_commanderZ, system);
+                    }
+                    
+                    // Force refresh nearest systems with new position
+                    qDebug() << "FORCE CMDR POSITION FIX: Refreshing nearest systems with updated coordinates";
+                    updateNearestSystems();
+                    updateUnclaimedSystems();
+                    
+                    emit commanderPositionChanged();
+                });
         connect(m_journalMonitor, &JournalMonitor::currentSystemChanged,
                 this, [this]() {
                     if (m_journalMonitor) {
@@ -467,6 +491,25 @@ void EDRHController::setConfigManager(ConfigManager *configManager)
         connect(m_configManager, &ConfigManager::isAdminChanged,
                 this, &EDRHController::isAdminChanged);
         
+        // MISSING INITIALIZATION FIX: Get initial commander name from config
+        // This ensures that even if journal monitoring fails, we show the config value
+        QString configCommanderName = m_configManager->commanderName();
+        if (!configCommanderName.isEmpty() && configCommanderName != "Unknown") {
+            qDebug() << "Initializing commander name from config:" << configCommanderName;
+            setCommanderName(configCommanderName);
+        }
+        
+        // Listen for commander name changes from config
+        connect(m_configManager, &ConfigManager::commanderNameChanged,
+                this, [this]() {
+                    QString configCommanderName = m_configManager->commanderName();
+                    qDebug() << "Config commander name changed to:" << configCommanderName;
+                    // Only update if journal monitor hasn't detected a commander yet
+                    if (m_commanderName == "Unknown" && !configCommanderName.isEmpty() && configCommanderName != "Unknown") {
+                        setCommanderName(configCommanderName);
+                    }
+                });
+        
         qDebug() << "EDRHController connected to ConfigManager, admin status:" << m_configManager->isAdmin();
     }
 }
@@ -534,7 +577,12 @@ void EDRHController::setCurrentSystem(const QString &system)
         
         // COMMANDER SWITCH FIX: Always update systems during commander switching if we have valid position
         bool isCommanderSwitch = !m_forcedCommanderName.isEmpty(); // Manual commander override
-        if (m_hasValidPosition && (m_sessionJumpTrackingActive || isCommanderSwitch)) {
+        
+        // FORCE MAIN CMDR FIX: Skip system updates during forced commander switches
+        // The positionUpdate signal will handle the refresh with correct coordinates
+        bool isForcedCommanderActive = m_forcedCommanderEnabled && !m_forcedCommanderName.isEmpty();
+        
+        if (m_hasValidPosition && (m_sessionJumpTrackingActive || isCommanderSwitch) && !isForcedCommanderActive) {
             if (isCommanderSwitch) {
                 qDebug() << "Commander switch detected - updating systems for new current system:" << system;
             }
@@ -544,6 +592,8 @@ void EDRHController::setCurrentSystem(const QString &system)
         } else {
             if (!m_hasValidPosition) {
                 qDebug() << "Skipping system update - position not valid";
+            } else if (isForcedCommanderActive) {
+                qDebug() << "Skipping system update - Force Main CMDR active, waiting for position update";
             } else {
                 qDebug() << "Skipping system update - session tracking not active and not a commander switch";
             }
@@ -693,7 +743,11 @@ void EDRHController::setForcedCommander(const QString &commander)
         if (m_journalMonitor) {
             m_journalMonitor->setForcedCommander(commander, true);
             qDebug() << "Switching journal monitoring to commander:" << commander;
+            qDebug() << "FORCE CMDR DEBUG: About to call switchToCommander for:" << commander;
             m_journalMonitor->switchToCommander(commander);
+            qDebug() << "FORCE CMDR DEBUG: switchToCommander call completed for:" << commander;
+        } else {
+            qDebug() << "FORCE CMDR ERROR: JournalMonitor not available for commander switch!";
         }
     } else {
         m_forcedCommanderEnabled = false;
@@ -706,8 +760,11 @@ void EDRHController::setForcedCommander(const QString &commander)
             qDebug() << "Switching back to natural commander detection";
             // Get the current commander that would be detected naturally (from latest journal)
             QString naturalCommander = m_journalMonitor->extractCommanderFromJournal();
+            qDebug() << "FORCE CMDR DEBUG: Natural commander detected as:" << naturalCommander;
             if (!naturalCommander.isEmpty() && naturalCommander != "Unknown") {
+                qDebug() << "FORCE CMDR DEBUG: About to call switchToCommander for natural commander:" << naturalCommander;
                 m_journalMonitor->switchToCommander(naturalCommander);
+                qDebug() << "FORCE CMDR DEBUG: switchToCommander call completed for natural commander:" << naturalCommander;
             }
         }
     }
@@ -1411,8 +1468,8 @@ void EDRHController::updateNearestSystems()
     // Use distance-based queries when we have valid commander position
     if (m_hasValidPosition) {
         qDebug() << "Using commander position for distance-based system sorting:" << m_commanderX << m_commanderY << m_commanderZ;
-        // Get nearby systems with distance calculation from current position
-        m_supabaseClient->getSystemsNear(m_commanderX, m_commanderY, m_commanderZ, 2000); // Reasonable limit for performance
+        // Get nearby systems with distance calculation from current position (unlimited)
+        m_supabaseClient->getSystemsNear(m_commanderX, m_commanderY, m_commanderZ, 999999); // Effectively unlimited
     } else {
         qDebug() << "No valid commander position, fetching all systems without distance sorting";
         // Fallback to general systems list if no position available

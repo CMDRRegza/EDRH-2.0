@@ -58,6 +58,7 @@ signals:
     void journalUpdated();
     void fsdJumpDetected(const QString &system, const QJsonObject &jumpData);
     void carrierJumpDetected(const QString &system, const QJsonObject &jumpData);
+    void positionUpdate(const QString &system, double x, double y, double z);
     void journalError(const QString &error);
 
 private slots:

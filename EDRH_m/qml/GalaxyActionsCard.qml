@@ -192,7 +192,7 @@ Rectangle {
                             target: edrhController.claimManager
                             function onClaimStatusChanged(systemName, isClaimed, claimedBy) {
                                 console.log("UI DEBUG: claimStatusChanged signal received - systemName:", systemName, "isClaimed:", isClaimed)
-                                updateClaimsCounter()
+                                claimsStatCard.updateClaimsCounter()
                             }
                         }
                         
@@ -201,7 +201,7 @@ Rectangle {
                             target: edrhController
                             function onCommanderNameChanged() {
                                 console.log("UI DEBUG: Commander changed, refreshing claims count")
-                                updateClaimsCounter()
+                                claimsStatCard.updateClaimsCounter()
                             }
                         }
                         
